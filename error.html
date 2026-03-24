@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>HotspotPro Error</title>
+    <style>
+        * {
+            box-sizing: border-box;
+        }
+
+        body {
+            margin: 0;
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 18px;
+            font-family: Arial, sans-serif;
+            background: linear-gradient(180deg, #fff7ed, #fffbeb);
+            color: #7c2d12;
+        }
+
+        .card {
+            width: min(100%, 380px);
+            padding: 28px 24px;
+            border: 1px solid #fed7aa;
+            border-radius: 24px;
+            background: #fff;
+            box-shadow: 0 16px 30px rgba(124, 45, 18, 0.08);
+            text-align: center;
+        }
+
+        .icon {
+            width: 62px;
+            height: 62px;
+            margin: 0 auto 16px;
+            border-radius: 999px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: #fff7ed;
+            color: #ea580c;
+            font-size: 28px;
+            font-weight: 800;
+        }
+
+        h1 {
+            margin: 0 0 10px;
+            color: #9a3412;
+            font-size: 24px;
+        }
+
+        p {
+            margin: 0 0 18px;
+            color: #7c2d12;
+            font-size: 14px;
+            line-height: 1.6;
+        }
+
+        .error-box {
+            margin-bottom: 18px;
+            padding: 14px;
+            border-radius: 16px;
+            background: #fff7ed;
+            color: #c2410c;
+            font-size: 13px;
+            font-weight: 700;
+        }
+
+        a {
+            display: inline-block;
+            width: 100%;
+            padding: 14px 16px;
+            border-radius: 16px;
+            background: linear-gradient(135deg, #2563eb, #7c3aed);
+            color: #fff;
+            text-decoration: none;
+            font-size: 14px;
+            font-weight: 800;
+        }
+    </style>
+</head>
+<body>
+    <div class="card">
+        <div class="icon">!</div>
+        <h1>Login Problem</h1>
+        <p>We could not complete your hotspot sign in. Please check your voucher details and try again.</p>
+        <div class="error-box">$(error)</div>
+        <a href="$(link-login)">Back to Login</a>
+    </div>
+</body>
+</html>

@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <meta http-equiv="refresh" content="4; url=https://www.google.com">
+    <title>HotspotPro Status</title>
+    <style>
+        * {
+            box-sizing: border-box;
+        }
+
+        body {
+            margin: 0;
+            min-height: 100vh;
+            font-family: Arial, sans-serif;
+            background: linear-gradient(180deg, #e0f2fe, #f8fafc);
+            color: #0f172a;
+        }
+
+        .page {
+            max-width: 420px;
+            margin: 0 auto;
+            padding: 20px 16px 28px;
+        }
+
+        .hero {
+            padding: 24px 20px;
+            border-radius: 24px;
+            background: linear-gradient(135deg, #16a34a, #22c55e);
+            color: #fff;
+            box-shadow: 0 18px 30px rgba(34, 197, 94, 0.25);
+        }
+
+        .hero h1 {
+            margin: 0 0 8px;
+            font-size: 26px;
+            font-weight: 800;
+        }
+
+        .hero p {
+            margin: 0;
+            font-size: 14px;
+            color: rgba(255, 255, 255, 0.9);
+        }
+
+        .redirect-note {
+            margin-top: 10px;
+            font-size: 12px;
+            color: rgba(255, 255, 255, 0.88);
+        }
+
+        .card {
+            margin-top: 16px;
+            padding: 18px;
+            border: 1px solid #dbe3ef;
+            border-radius: 18px;
+            background: #fff;
+            box-shadow: 0 10px 24px rgba(15, 23, 42, 0.06);
+        }
+
+        .label {
+            display: block;
+            margin-bottom: 6px;
+            color: #64748b;
+            font-size: 11px;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+        }
+
+        .value {
+            margin-bottom: 14px;
+            font-size: 18px;
+            font-weight: 800;
+            color: #0f172a;
+        }
+
+        .row {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 12px;
+        }
+
+        .stat {
+            padding: 14px;
+            border-radius: 16px;
+            background: #f8fafc;
+            border: 1px solid #e2e8f0;
+        }
+
+        .stat-title {
+            font-size: 11px;
+            font-weight: 700;
+            color: #64748b;
+            text-transform: uppercase;
+        }
+
+        .stat-value {
+            margin-top: 8px;
+            font-size: 20px;
+            font-weight: 800;
+            color: #0f172a;
+        }
+
+        .actions {
+            display: grid;
+            gap: 12px;
+            margin-top: 18px;
+        }
+
+        .btn {
+            display: block;
+            width: 100%;
+            padding: 14px 16px;
+            border-radius: 16px;
+            text-align: center;
+            text-decoration: none;
+            font-size: 14px;
+            font-weight: 800;
+        }
+
+        .btn.primary {
+            background: linear-gradient(135deg, #2563eb, #7c3aed);
+            color: #fff;
+        }
+
+        .btn.secondary {
+            background: #eef2ff;
+            color: #4338ca;
+        }
+    </style>
+</head>
+<body>
+    <div class="page">
+        <div class="hero">
+            <h1>Internet Connected</h1>
+            <p>Your HotspotPro session is active and ready to browse.</p>
+            <div class="redirect-note">Redirecting to Google in a few seconds...</div>
+        </div>
+
+        <div class="card">
+            <span class="label">Username</span>
+            <div class="value">$(username)</div>
+
+            <div class="row">
+                <div class="stat">
+                    <div class="stat-title">IP Address</div>
+                    <div class="stat-value">$(ip)</div>
+                </div>
+                <div class="stat">
+                    <div class="stat-title">Uptime</div>
+                    <div class="stat-value">$(uptime)</div>
+                </div>
+                <div class="stat">
+                    <div class="stat-title">Download</div>
+                    <div class="stat-value">$(bytes-in-nice)</div>
+                </div>
+                <div class="stat">
+                    <div class="stat-title">Upload</div>
+                    <div class="stat-value">$(bytes-out-nice)</div>
+                </div>
+            </div>
+
+            <div class="actions">
+                <a class="btn primary" href="https://www.google.com">Open Google Now</a>
+                <a class="btn secondary" href="$(link-status)">Stay on Status Page</a>
+                <a class="btn primary" href="$(link-logout)">Log Out</a>
+            </div>
+        </div>
+    </div>
+</body>
+</html>

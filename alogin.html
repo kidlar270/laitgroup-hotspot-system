@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <meta http-equiv="refresh" content="0; url=$(link-login)">
+    <title>HotspotPro Redirect</title>
+    <style>
+        body {
+            margin: 0;
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-family: Arial, sans-serif;
+            background: linear-gradient(135deg, #3b82f6, #9333ea);
+            color: #fff;
+        }
+
+        .card {
+            width: min(92vw, 340px);
+            padding: 28px 24px;
+            border-radius: 24px;
+            background: rgba(255, 255, 255, 0.12);
+            text-align: center;
+            backdrop-filter: blur(10px);
+        }
+
+        h1 {
+            margin: 0 0 10px;
+            font-size: 22px;
+        }
+
+        p {
+            margin: 0;
+            font-size: 14px;
+            color: rgba(255, 255, 255, 0.88);
+        }
+
+        a {
+            color: #fff;
+            font-weight: 700;
+        }
+    </style>
+</head>
+<body>
+    <div class="card">
+        <h1>Preparing your login</h1>
+        <p>Redirecting to the HotspotPro sign-in page. If nothing happens, <a href="$(link-login)">tap here</a>.</p>
+    </div>
+</body>
+</html>
