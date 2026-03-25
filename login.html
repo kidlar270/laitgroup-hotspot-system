@@ -357,25 +357,13 @@
             <div class="glass-card">
                 <div class="card-body">
                     <div class="section-head">
-                        <h2 class="section-title">Short-Term Plans</h2>
+                        <h2 class="section-title">Packages</h2>
                         <div class="section-tag">Live</div>
                     </div>
                     <div class="plan-grid" id="short-term-packages">
                         <div class="empty-state">Loading packages...</div>
                     </div>
                     <div class="packages-note" id="packages-note">Looking for your saved dashboard packages...</div>
-                </div>
-            </div>
-
-            <div class="glass-card">
-                <div class="card-body">
-                    <div class="section-head">
-                        <h2 class="section-title">Long-Term Plans</h2>
-                        <div class="section-tag">Live</div>
-                    </div>
-                    <div class="plan-grid" id="long-term-packages">
-                        <div class="empty-state">Loading packages...</div>
-                    </div>
                 </div>
             </div>
 
@@ -418,6 +406,106 @@
         <div class="footer-note">Powered by LAROI HOTSPOT HUB</div>
     </div>
 
+    <!-- M-Pesa Phone Input Modal -->
+    <div id="mpesa-modal" class="hidden fixed inset-0 z-50 flex items-center justify-center p-4" style="background: rgba(15, 23, 42, 0.7); backdrop-filter: blur(4px);">
+        <div class="bg-white rounded-3xl shadow-2xl max-w-sm w-full overflow-hidden animate-in fade-in zoom-in duration-300">
+            <!-- Header -->
+            <div class="bg-gradient-to-r from-green-500 to-emerald-600 px-8 py-6 text-white">
+                <div class="flex items-center gap-3">
+                    <div class="text-3xl">📱</div>
+                    <div>
+                        <h3 class="text-xl font-black">M-Pesa Payment</h3>
+                        <p class="text-sm text-emerald-100 mt-1">Enter your phone number</p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Body -->
+            <div class="p-8 space-y-6">
+                <!-- Package Info -->
+                <div class="bg-slate-50 rounded-2xl p-4 border border-slate-200">
+                    <div class="text-xs font-bold text-slate-500 uppercase tracking-wider mb-2">Selected Package</div>
+                    <div class="flex items-center justify-between">
+                        <div>
+                            <p class="font-bold text-slate-900" id="modal-package-name">Loading...</p>
+                            <p class="text-sm text-slate-500 mt-1" id="modal-package-duration">Duration info</p>
+                        </div>
+                        <div class="text-right">
+                            <p class="text-2xl font-black text-green-600" id="modal-package-price">-</p>
+                            <p class="text-xs text-slate-500 mt-1">KES</p>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Phone Input -->
+                <div class="space-y-2">
+                    <label class="block text-sm font-bold text-slate-700 uppercase tracking-wide">Phone Number</label>
+                    <div class="relative">
+                        <div class="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400 font-bold text-lg">+254</div>
+                        <input 
+                            type="tel" 
+                            id="modal-phone-input" 
+                            placeholder="712345678"
+                            class="w-full pl-16 pr-4 py-4 bg-slate-50 border-2 border-slate-200 rounded-2xl focus:border-green-500 focus:outline-none focus:bg-white transition-all text-lg font-semibold"
+                            inputmode="numeric"
+                            maxlength="9"
+                        >
+                    </div>
+                    <p class="text-xs text-slate-500 mt-2">Format: 712345678 or 0712345678</p>
+                </div>
+
+                <!-- Status Message -->
+                <div id="modal-status" class="hidden p-4 rounded-2xl text-sm font-semibold"></div>
+            </div>
+
+            <!-- Footer -->
+            <div class="px-8 py-6 bg-slate-50 border-t border-slate-200 flex gap-3">
+                <button 
+                    onclick="closeMpesaModal()" 
+                    class="flex-1 px-6 py-3 border-2 border-slate-200 text-slate-700 rounded-xl font-bold hover:bg-slate-100 transition-all"
+                >
+                    Cancel
+                </button>
+                <button 
+                    onclick="submitMpesaModal()" 
+                    class="flex-1 px-6 py-3 bg-gradient-to-r from-green-500 to-emerald-600 text-white rounded-xl font-bold hover:shadow-lg hover:shadow-green-500/30 transition-all flex items-center justify-center gap-2"
+                >
+                    <span>Continue</span>
+                    <span>→</span>
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <style>
+        @keyframes fadeIn {
+            from { opacity: 0; }
+            to { opacity: 1; }
+        }
+        @keyframes zoomIn {
+            from { 
+                opacity: 0; 
+                transform: scale(0.95);
+            }
+            to { 
+                opacity: 1; 
+                transform: scale(1);
+            }
+        }
+        .animate-in {
+            animation: fadeIn 0.3s ease-out;
+        }
+        .zoom-in {
+            animation: zoomIn 0.3s ease-out;
+        }
+        .hidden {
+            display: none;
+        }
+        #mpesa-modal:not(.hidden) {
+            display: flex;
+        }
+    </style>
+
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
         import { getAuth, signInAnonymously } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
@@ -446,8 +534,174 @@
         const auth = getAuth(app);
         const db = getFirestore(app);
 
+        // Helper functions at module level
+        window.openMpesaModal = (pkgId, name, price, hours) => {
+            selectedPackage = {
+                id: pkgId,
+                name: name,
+                price: price,
+                durationHours: hours
+            };
+            
+            // Update modal display
+            document.getElementById('modal-package-name').textContent = name;
+            document.getElementById('modal-package-price').textContent = price;
+            
+            const durationLabel = hours >= 24 && hours % 24 === 0
+                ? `${hours / 24} Day${hours / 24 === 1 ? "" : "s"} of access`
+                : `${hours} Hour${hours === 1 ? "" : "s"} of access`;
+            document.getElementById('modal-package-duration').textContent = durationLabel;
+            
+            // Clear previous input and status
+            document.getElementById('modal-phone-input').value = '';
+            document.getElementById('modal-status').classList.add('hidden');
+            document.getElementById('modal-phone-input').focus();
+            
+            // Show modal
+            document.getElementById('mpesa-modal').classList.remove('hidden');
+            
+            // Highlight package in background
+            document.querySelectorAll('.plan-card').forEach(card => {
+                card.style.borderColor = 'rgba(37, 99, 235, 0.2)';
+                card.style.backgroundColor = '';
+                card.style.boxShadow = 'inset 0 1px 0 rgba(255, 255, 255, 0.9)';
+            });
+            
+            event.target.closest('.plan-card').style.borderColor = '#2563eb';
+            event.target.closest('.plan-card').style.backgroundColor = '#dbeafe';
+            event.target.closest('.plan-card').style.boxShadow = '0 18px 28px rgba(37, 99, 235, 0.14), inset 0 1px 0 rgba(255, 255, 255, 0.95)';
+        };
+
+        window.closeMpesaModal = () => {
+            document.getElementById('mpesa-modal').classList.add('hidden');
+            selectedPackage = null;
+        };
+
+        window.submitMpesaModal = async () => {
+            const phoneInput = document.getElementById('modal-phone-input').value.trim();
+            const statusEl = document.getElementById('modal-status');
+            
+            if (!phoneInput) {
+                statusEl.className = 'p-4 rounded-2xl text-sm font-semibold bg-red-50 text-red-700 border border-red-200';
+                statusEl.textContent = '❌ Please enter your phone number';
+                statusEl.classList.remove('hidden');
+                return;
+            }
+            
+            // Format phone number
+            let phoneNumber = phoneInput.replace(/^0/, '').replace(/[^0-9]/g, '');
+            if (phoneNumber.length === 9) {
+                phoneNumber = '0' + phoneNumber;
+            }
+            
+            if (phoneNumber.length !== 10 || !phoneNumber.startsWith('0')) {
+                statusEl.className = 'p-4 rounded-2xl text-sm font-semibold bg-red-50 text-red-700 border border-red-200';
+                statusEl.textContent = '❌ Invalid format. Use: 0712345678 or 712345678';
+                statusEl.classList.remove('hidden');
+                return;
+            }
+            
+            if (!selectedPackage) {
+                statusEl.className = 'p-4 rounded-2xl text-sm font-semibold bg-red-50 text-red-700 border border-red-200';
+                statusEl.textContent = '❌ Package not selected';
+                statusEl.classList.remove('hidden');
+                return;
+            }
+            
+            // Show loading state
+            statusEl.className = 'p-4 rounded-2xl text-sm font-semibold bg-blue-50 text-blue-700 border border-blue-200';
+            statusEl.textContent = '⏳ Initiating M-Pesa STK Push...';
+            statusEl.classList.remove('hidden');
+            
+            // Close modal and initiate payment
+            setTimeout(async () => {
+                document.getElementById('mpesa-modal').classList.add('hidden');
+                mpesaNumberInput.value = phoneNumber;
+                await initiateMpesaPayment(phoneNumber);
+            }, 300);
+        };
+
+        window.selectPackage = (pkgId, name, price, hours) => {
+            openMpesaModal(pkgId, name, price, hours);
+        };
+
+        window.initiateMpesaPayment = async (phoneNumber) => {
+            if (!ownerId) {
+                setStatus(paymentStatus, "error", "Portal not linked to owner. Set owner ID first.");
+                return;
+            }
+
+            if (!selectedPackage) {
+                setStatus(paymentStatus, "error", "No package selected.");
+                return;
+            }
+
+            try {
+                setStatus(paymentStatus, "info", "Initiating M-Pesa STK Push...");
+                
+                // Get current user's ID token
+                const currentUser = auth.currentUser;
+                if (!currentUser) {
+                    await signInAnonymously(auth);
+                }
+                
+                const idToken = await auth.currentUser.getIdToken();
+
+                // Call Firebase Function
+                const response = await fetch(
+                    `https://us-central1-${appId}.cloudfunctions.net/initiateMpesaPayment`,
+                    {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'Authorization': `Bearer ${idToken}`,
+                        },
+                        body: JSON.stringify({
+                            phoneNumber: phoneNumber,
+                            amount: selectedPackage.price,
+                            packageId: selectedPackage.id,
+                            appId: appId,
+                            userId: ownerId,
+                        })
+                    }
+                );
+
+                const result = await response.json();
+
+                if (!response.ok) {
+                    setStatus(paymentStatus, "error", result.error || "Payment initiation failed.");
+                    return;
+                }
+
+                setStatus(paymentStatus, "success", "STK Push sent! Check your phone for M-Pesa prompt.");
+                
+                // Clear form
+                mpesaNumberInput.value = '';
+                
+                // Poll for payment completion
+                pollPaymentStatus(result.checkoutRequestId, ownerId);
+                
+            } catch (error) {
+                console.error("Payment error:", error);
+                setStatus(paymentStatus, "error", error.message || "Failed to initiate payment. Check console.");
+            }
+        };
+
+        window.pollPaymentStatus = async (checkoutRequestId, userId) => {
+            let attempts = 0;
+            const maxAttempts = 60; // 2 minutes
+            
+            const checkStatus = setInterval(async () => {
+                attempts++;
+                
+                if (attempts > maxAttempts) {
+                    clearInterval(checkStatus);
+                    return;
+                }
+            }, 2000); // Check every 2 seconds
+        };
+
         const shortTermTarget = document.getElementById("short-term-packages");
-        const longTermTarget = document.getElementById("long-term-packages");
         const voucherForm = document.getElementById("voucher-form");
         const voucherCodeInput = document.getElementById("voucher-code");
         const voucherPasswordInput = document.getElementById("voucher-password");
@@ -463,6 +717,8 @@
             .replace(/>/g, "&gt;")
             .replace(/"/g, "&quot;")
             .replace(/'/g, "&#39;");
+
+        let selectedPackage = null;
 
         const readCachedPackages = () => {
             if (!ownerId) {
@@ -497,7 +753,11 @@
                     : `${hours} Hour${hours === 1 ? "" : "s"}`;
 
                 return [
-                    '<div class="plan-card">',
+                    '<div class="plan-card" style="cursor: pointer; border: 2px solid rgba(37, 99, 235, 0.2);" onclick="selectPackage(\'' + 
+                    pkg.id.replace(/'/g, "\\'") + '\', \'' + 
+                    escapeHtml(pkg.name).replace(/'/g, "\\'") + '\', ' + 
+                    price + ', ' + 
+                    hours + ')">',
                     `<div class="plan-title">${durationLabel}</div>`,
                     `<div class="plan-price">${price}<span>KSH</span></div>`,
                     `<div class="plan-name">${escapeHtml(pkg.name || "Package")}</div>`,
@@ -509,7 +769,6 @@
         const syncPackages = async () => {
             if (!ownerId) {
                 renderPackages(shortTermTarget, []);
-                renderPackages(longTermTarget, []);
                 packagesNote.textContent = "No dashboard owner found yet. Open the dashboard first, or load this page with ?owner=YOUR_USER_UID.";
                 return;
             }
@@ -518,15 +777,13 @@
                 const snapshot = await getDocs(collection(db, "artifacts", appId, "users", ownerId, "packages"));
                 const packages = snapshot.docs.map((docItem) => ({ id: docItem.id, ...docItem.data() }))
                     .sort((a, b) => (a.name || "").localeCompare(b.name || ""));
-                renderPackages(shortTermTarget, packages.filter((pkg) => Number(pkg.durationHours || 0) <= 24));
-                renderPackages(longTermTarget, packages.filter((pkg) => Number(pkg.durationHours || 0) > 24));
+                renderPackages(shortTermTarget, packages);
                 packagesNote.textContent = packages.length
                     ? `Loaded ${packages.length} live package${packages.length === 1 ? "" : "s"} from the dashboard.`
                     : "No packages have been added in the dashboard yet.";
             } catch (error) {
                 console.error("Package sync failed:", error);
                 shortTermTarget.innerHTML = '<div class="empty-state">Could not load packages.</div>';
-                longTermTarget.innerHTML = '<div class="empty-state">Could not load packages.</div>';
                 packagesNote.textContent = "Package loading failed. Serve this page over http and make sure Firebase anonymous auth and Firestore access are enabled.";
             }
         };
@@ -580,7 +837,34 @@
                 setStatus(paymentStatus, "error", "Enter your M-Pesa number first.");
                 return;
             }
-            setStatus(paymentStatus, "info", "STK Push UI is ready. Connect your backend or Firebase Function to trigger the real payment request.");
+            
+            if (!selectedPackage) {
+                setStatus(paymentStatus, "error", "Please select a package first.");
+                return;
+            }
+
+            initiateMpesaPayment(phone);
+        });
+
+        // Keyboard support for modal
+        document.addEventListener('keydown', (e) => {
+            const modal = document.getElementById('mpesa-modal');
+            if (!modal.classList.contains('hidden')) {
+                if (e.key === 'Enter') {
+                    e.preventDefault();
+                    submitMpesaModal();
+                } else if (e.key === 'Escape') {
+                    e.preventDefault();
+                    closeMpesaModal();
+                }
+            }
+        });
+
+        // Close modal when clicking outside
+        document.getElementById('mpesa-modal').addEventListener('click', (e) => {
+            if (e.target.id === 'mpesa-modal') {
+                closeMpesaModal();
+            }
         });
 
         try {
@@ -592,8 +876,7 @@
             const code = error && error.code ? ` (${error.code})` : "";
             const cachedPackages = readCachedPackages();
             if (cachedPackages.length) {
-                renderPackages(shortTermTarget, cachedPackages.filter((pkg) => Number(pkg.durationHours || 0) <= 24));
-                renderPackages(longTermTarget, cachedPackages.filter((pkg) => Number(pkg.durationHours || 0) > 24));
+                renderPackages(shortTermTarget, cachedPackages);
                 packagesNote.textContent = `Firebase authentication failed${code}, so cached dashboard packages are being shown instead.`;
                 setStatus(voucherStatus, "info", `Firebase authentication failed${code}. Cached packages loaded; voucher verification still needs Firebase access.`);
             } else {

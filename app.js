@@ -20,6 +20,8 @@
         let packages = [];
         let vouchers = [];
         let routers = [];
+        let activeSessions = [];
+        let pppoeUsers = [];
         let activeRouterId = '';
         let activeRouterFilter = 'all';
 
@@ -286,15 +288,35 @@
                 }
                 renderPackages();
                 renderPackageOptions();
+                
+                // Auto-sync packages to all routers when they change
+                (async () => {
+                    if (typeof triggerRouterSync !== 'function') return;
+                    console.log(`[Auto-Sync] Packages changed (${packages.length} total). Syncing to all online routers...`);
+                    for (const router of routers.filter(r => (r.status || 'offline') === 'online')) {
+                        await triggerRouterSync(router.id);
+                    }
+                })();
             });
 
             onSnapshot(collection(db, 'artifacts', appId, 'users', userId, 'vouchers'), snapshot => {
                 vouchers = snapshot.docs.map(item => ({ id: item.id, ...item.data() }))
                     .sort((a, b) => (a.code || '').localeCompare(b.code || ''));
                 renderVouchers();
+                
+                // Auto-sync vouchers (hotspot users) to all routers when they change
+                (async () => {
+                    if (typeof triggerRouterSync !== 'function') return;
+                    console.log(`[Auto-Sync] Vouchers changed (${vouchers.length} total). Syncing to all online routers...`);
+                    for (const router of routers.filter(r => (r.status || 'offline') === 'online')) {
+                        await triggerRouterSync(router.id);
+                    }
+                })();
             });
 
             onSnapshot(collection(db, 'artifacts', appId, 'users', userId, 'routers'), snapshot => {
+                // Save old routers to detect adds/updates
+                const oldRouters = [...routers];
                 routers = snapshot.docs.map(item => ({ id: item.id, ...item.data() }))
                     .sort((a, b) => (a.name || a.ip || '').localeCompare(b.name || b.ip || ''));
                 const activeRouter = routers.find((router) => router.id === activeRouterId) || routers.find((router) => (router.status || 'offline') === 'online') || routers[0];
@@ -308,8 +330,133 @@
                     document.getElementById('router-status-text').innerText = `${activeRouter.name || activeRouter.ip || 'Router'} ${activeRouter.status || 'offline'}`;
                 }
                 renderRouters();
+                
+                // Auto-sync when routers are added or updated
+                (async () => {
+                    if (typeof triggerRouterSync !== 'function') return;
+                    for (const router of routers.filter(r => (r.status || 'offline') === 'online')) {
+                        const wasAdded = !oldRouters.find(r => r.id === router.id);
+                        const wasUpdated = oldRouters.find(r => r.id === router.id && r.updatedAt !== router.updatedAt);
+                        if (wasAdded || wasUpdated) {
+                            console.log(`[Auto-Sync] Router ${router.name || router.ip} added/updated. Syncing packages...`);
+                            await triggerRouterSync(router.id);
+                        }
+                    }
+                })();
+            });
+
+            // Auto-sync packages to all routers when packages change or routers are added
+            const triggerRouterSync = async (routerId) => {
+                try {
+                    if (!routerId || !userId) return;
+                    // Ensure buildSetupScript is available by checking for the function
+                    if (typeof buildSetupScript !== 'function') {
+                        console.warn('buildSetupScript not yet available, will retry');
+                        return;
+                    }
+                    const setupScript = await buildSetupScript();
+                    await setDoc(doc(db, 'artifacts', appId, 'users', userId, 'sync', 'mikrotik'), {
+                        routerId: routerId,
+                        script: setupScript,
+                        timestamp: Date.now(),
+                        updatedAt: Date.now(),
+                        trigger: 'dashboard-update'
+                    });
+                } catch (error) {
+                    console.warn('Could not trigger router sync:', error);
+                }
+            };
+
+            // Listen to active sessions (users with active vouchers)
+            onSnapshot(collection(db, 'artifacts', appId, 'users', userId, 'vouchers'), snapshot => {
+                activeSessions = snapshot.docs
+                    .map(item => ({ id: item.id, ...item.data() }))
+                    .filter(v => v.status === 'active' && v.used === true && (!v.expiresAt || new Date(v.expiresAt) > new Date()))
+                    .sort((a, b) => (a.code || '').localeCompare(b.code || ''));
+                const activeCount = activeSessions.length;
+                document.getElementById('stat-users').innerText = activeCount;
+                document.getElementById('active-sessions-count').innerText = activeCount;
+                renderActiveSessions();
+            });
+
+            // Listen to PPPoE users
+            onSnapshot(collection(db, 'artifacts', appId, 'users', userId, 'pppoe-users'), snapshot => {
+                pppoeUsers = snapshot.docs
+                    .map(item => ({ id: item.id, ...item.data() }))
+                    .sort((a, b) => (a.username || '').localeCompare(b.username || ''));
+                document.getElementById('pppoe-count').innerText = pppoeUsers.length;
+                renderPppoeUsers();
+                
+                // Auto-sync PPPoE users to routers when they change
+                (async () => {
+                    if (typeof triggerRouterSync !== 'function') return;
+                    for (const router of routers.filter(r => (r.status || 'offline') === 'online')) {
+                        console.log(`[Auto-Sync PPPoE] Syncing ${pppoeUsers.length} PPPoE users to router ${router.name || router.ip}...`);
+                        await triggerRouterSync(router.id);
+                    }
+                })();
             });
         }
+
+        // Auto-check router health every 60 seconds
+        setInterval(async () => {
+            if (!currentUser || routers.length === 0) return;
+            for (const router of routers) {
+                try {
+                    const response = await fetch(
+                        `https://us-central1-${appId}.cloudfunctions.net/checkRouterHealth?appId=${appId}&userId=${currentUser.uid}&routerId=${router.id}`
+                    );
+                    await response.json();
+                } catch (error) {
+                    console.warn(`Health check failed for ${router.name || router.ip}:`, error);
+                }
+            }
+        }, 60000);
+
+        const renderActiveSessions = () => {
+            const list = document.getElementById('active-sessions-list');
+            if (!activeSessions.length) {
+                list.innerHTML = '<div class="rounded-2xl border border-dashed border-slate-200 p-8 text-center text-slate-400">No active sessions right now.</div>';
+                return;
+            }
+            list.innerHTML = activeSessions.map(session => {
+                const pkg = packages.find(p => p.id === session.packageId);
+                const duration = session.durationHours || 24;
+                const durationLabel = duration >= 24 && duration % 24 === 0 ? `${duration/24} Day${duration/24===1?"":"s"}` : `${duration} Hour${duration===1?"":"s"}`;
+                return [
+                    '<div class="rounded-2xl border border-slate-200 p-4 bg-emerald-50 flex items-center justify-between">',
+                    '<div>',
+                    `<h4 class="font-bold text-slate-900">${escapeHtml(session.code || 'User')}</h4>`,
+                    `<p class="text-sm text-slate-600">${escapeHtml(pkg ? pkg.name : 'Package')} · ${durationLabel}</p>`,
+                    '</div>',
+                    '<div class="flex items-center gap-2">',
+                    '<div class="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></div>',
+                    '<span class="text-xs font-bold text-emerald-700">Online</span>',
+                    '</div>',
+                    '</div>'
+                ].join('');
+            }).join('');
+        };
+
+        const renderPppoeUsers = () => {
+            const list = document.getElementById('pppoe-list');
+            if (!pppoeUsers.length) {
+                list.innerHTML = '<div class="rounded-2xl border border-dashed border-slate-200 p-8 text-center text-slate-400">No PPPoE users yet.</div>';
+                return;
+            }
+            list.innerHTML = pppoeUsers.map(user => [
+                '<div class="rounded-2xl border border-slate-200 p-5 flex items-center justify-between hover:bg-slate-50 transition">',
+                '<div>',
+                `<h4 class="font-bold text-slate-900">${escapeHtml(user.username || 'PPPoE User')}</h4>`,
+                `<p class="text-sm text-slate-500">${escapeHtml(user.name || 'No name')} · Created ${new Date(user.createdAt || 0).toLocaleDateString()}</p>`,
+                '</div>',
+                '<div class="flex gap-2">',
+                `<button type="button" onclick="editPppoeUser('${user.id}')" class="px-3 py-1.5 text-sm rounded-lg bg-slate-100 text-slate-700 font-bold hover:bg-slate-200 transition">Edit</button>`,
+                `<button type="button" onclick="removePppoeUser('${user.id}')" class="px-3 py-1.5 text-sm rounded-lg bg-red-50 text-red-600 font-bold hover:bg-red-100 transition">Delete</button>`,
+                '</div>',
+                '</div>'
+            ].join('')).join('');
+        };
 
         const resetPackageForm = () => {
             document.getElementById('package-form').reset();
@@ -332,6 +479,12 @@
             document.getElementById('router-ssid').value = '';
             document.getElementById('router-port').value = '8728';
             document.getElementById('save-router-btn').innerHTML = '<i class="fas fa-save"></i> Save & Test Link';
+        };
+
+        const resetPppoeForm = () => {
+            document.getElementById('pppoe-form').reset();
+            document.getElementById('pppoe-id').value = '';
+            document.getElementById('pppoe-submit-btn').innerText = 'Save PPPoE User';
         };
 
         const applyRouterToForm = (router) => {
@@ -395,7 +548,8 @@
                     `<td class="px-5 py-4 text-blue-600">${remote}</td>`,
                     `<td class="px-5 py-4"><span class="inline-flex px-3 py-1 rounded-full border text-xs font-bold ${statusClass}">${escapeHtml(status)}</span></td>`,
                     '<td class="px-5 py-4 text-right">',
-                    `<div class="flex justify-end gap-2">
+                    `<div class="flex justify-end gap-2 flex-wrap">
+                        <button type="button" onclick="checkRouterHealth('${router.id}')" class="px-3 py-2 text-xs rounded-lg bg-blue-50 text-blue-600 font-bold hover:bg-blue-100 transition">Check Status</button>
                         <button type="button" onclick="editRouter('${router.id}')" class="px-4 py-2 rounded-xl bg-slate-100 text-slate-700 font-bold">Edit</button>
                         <button type="button" onclick="toggleRouterStatus('${router.id}')" class="px-4 py-2 rounded-xl bg-amber-50 text-amber-700 font-bold">${status === 'online' ? 'Mark Offline' : 'Mark Online'}</button>
                         <button type="button" onclick="removeRouter('${router.id}')" class="px-4 py-2 rounded-xl bg-red-50 text-red-600 font-bold">Delete</button>
@@ -505,6 +659,12 @@
                 const comment = escapeRouterScriptString(`Voucher ${voucher.code || ''} | ${(voucher.status || 'active')}`);
                 return rosIfMissing(`find name="${username}"`, `add name="${username}" password="${password}" profile="${profileName}" server=hotspot1 comment="${comment}"`, `voucher ${username}`);
             });
+            const pppoeAccounts = pppoeUsers.flatMap((user) => {
+                const username = escapeRouterScriptString(String(user.username || 'pppoe'));
+                const password = escapeRouterScriptString(String(user.password || 'password'));
+                const comment = escapeRouterScriptString(`PPPoE User ${user.username || ''} | ${user.name || 'No name'}`);
+                return rosIfMissing(`find name="${username}"`, `add name="${username}" password="${password}" service=pppoe comment="${comment}"`, `PPPoE ${username}`);
+            });
 
             return [
                 '# tech.rsc',
@@ -547,6 +707,9 @@
                 ...rosIfMissing('find name="default"', 'add name=default shared-users=1 transparent-proxy=yes', 'default hotspot user profile'),
                 ...packageProfiles,
                 ...(voucherUsers.length ? ['', '/ip hotspot user', ...voucherUsers] : []),
+                '',
+                '/ppp/secret',
+                ...pppoeAccounts,
                 '',
                 '/ip dns',
                 'set allow-remote-requests=yes servers=8.8.8.8,8.8.4.4',
@@ -650,8 +813,31 @@
                 await setDoc(doc(db, 'artifacts', appId, 'users', currentUser.uid, 'config', 'mikrotik'), config);
                 btn.disabled = false;
                 btn.innerHTML = '<i class="fas fa-save"></i> Update Router';
-                document.getElementById('router-status-indicator').className = "w-2 h-2 rounded-full bg-green-500 animate-pulse";
-                document.getElementById('router-status-text').innerText = `${config.name || config.ip} online`;
+                document.getElementById('router-status-indicator').className = "w-2 h-2 rounded-full bg-yellow-500";
+                document.getElementById('router-status-text').innerText = `${config.name || config.ip} checking...`;
+                
+                // Auto-check health after 3 seconds
+                setTimeout(async () => {
+                    try {
+                        const response = await fetch(
+                            `https://us-central1-${appId}.cloudfunctions.net/checkRouterHealth?appId=${appId}&userId=${currentUser.uid}&routerId=${savedRouterId}`
+                        );
+                        const result = await response.json();
+                        
+                        if (result.status === 'online') {
+                            document.getElementById('router-status-indicator').className = "w-2 h-2 rounded-full bg-green-500 animate-pulse";
+                            document.getElementById('router-status-text').innerText = `${config.name || config.ip} online`;
+                        } else {
+                            document.getElementById('router-status-indicator').className = "w-2 h-2 rounded-full bg-red-500";
+                            document.getElementById('router-status-text').innerText = `${config.name || config.ip} offline`;
+                        }
+                    } catch (error) {
+                        console.error('Health check after save failed:', error);
+                        document.getElementById('router-status-indicator').className = "w-2 h-2 rounded-full bg-red-500";
+                        document.getElementById('router-status-text').innerText = `${config.name || config.ip} check failed`;
+                    }
+                }, 3000);
+                
                 window.openModal('success-modal');
             } catch (error) {
                 console.error('Failed to save router config:', error);
@@ -699,8 +885,30 @@
             resetVoucherForm();
         });
 
+        document.getElementById('pppoe-form').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            if (!currentUser) return;
+            const id = document.getElementById('pppoe-id').value;
+            const payload = {
+                username: document.getElementById('pppoe-username').value.trim(),
+                password: document.getElementById('pppoe-password').value.trim(),
+                name: document.getElementById('pppoe-name').value.trim() || '',
+                updatedAt: Date.now()
+            };
+            if (id) {
+                await updateDoc(doc(db, 'artifacts', appId, 'users', currentUser.uid, 'pppoe-users', id), payload);
+            } else {
+                await addDoc(collection(db, 'artifacts', appId, 'users', currentUser.uid, 'pppoe-users'), {
+                    ...payload,
+                    createdAt: Date.now()
+                });
+            }
+            resetPppoeForm();
+        });
+
         document.getElementById('package-reset-btn').addEventListener('click', resetPackageForm);
         document.getElementById('voucher-reset-btn').addEventListener('click', resetVoucherForm);
+        document.getElementById('pppoe-reset-btn').addEventListener('click', resetPppoeForm);
         document.getElementById('router-reset-btn').addEventListener('click', resetRouterForm);
         document.getElementById('router-search').addEventListener('input', renderRouters);
         document.querySelectorAll('.router-filter-btn').forEach((button) => {
@@ -772,6 +980,45 @@
             }
         };
 
+        window.checkRouterHealth = async (id) => {
+            if (!currentUser) return;
+            const button = event?.target;
+            if (button) {
+                button.disabled = true;
+                button.innerText = 'Waiting 3s...';
+            }
+            
+            // Wait 3 seconds before pinging MikroTik
+            await new Promise(resolve => setTimeout(resolve, 3000));
+            
+            try {
+                if (button) {
+                    button.innerText = 'Checking...';
+                }
+                
+                const response = await fetch(
+                    `https://us-central1-${appId}.cloudfunctions.net/checkRouterHealth?appId=${appId}&userId=${currentUser.uid}&routerId=${id}`
+                );
+                const result = await response.json();
+                
+                if (button) {
+                    button.disabled = false;
+                    button.innerText = result.status === 'online' ? '✓ Online' : '✗ Offline';
+                    setTimeout(() => {
+                        button.innerText = 'Check Status';
+                    }, 2000);
+                }
+                
+                renderRouters();
+            } catch (error) {
+                console.error('Health check failed:', error);
+                if (button) {
+                    button.disabled = false;
+                    button.innerText = 'Check Status';
+                }
+            }
+        };
+
         window.removeRouter = async (id) => {
             if (!currentUser || !confirm('Delete this MikroTik router?')) return;
             await deleteDoc(doc(db, 'artifacts', appId, 'users', currentUser.uid, 'routers', id));
@@ -781,7 +1028,27 @@
             }
         };
 
+        window.editPppoeUser = (id) => {
+            const user = pppoeUsers.find(item => item.id === id);
+            if (!user) return;
+            document.getElementById('pppoe-id').value = user.id;
+            document.getElementById('pppoe-username').value = user.username || '';
+            document.getElementById('pppoe-password').value = user.password || '';
+            document.getElementById('pppoe-name').value = user.name || '';
+            document.getElementById('pppoe-submit-btn').innerText = 'Update PPPoE User';
+            window.switchTab('pppoe');
+        };
+
+        window.removePppoeUser = async (id) => {
+            if (!currentUser || !confirm('Delete this PPPoE user?')) return;
+            await deleteDoc(doc(db, 'artifacts', appId, 'users', currentUser.uid, 'pppoe-users', id));
+            if (document.getElementById('pppoe-id').value === id) {
+                resetPppoeForm();
+            }
+        };
+
         resetPackageForm();
         resetVoucherForm();
+        resetPppoeForm();
         resetRouterForm();
 
