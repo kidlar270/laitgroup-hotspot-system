@@ -22,14 +22,7 @@
         let routers = [];
         let activeSessions = [];
         let pppoeUsers = [];
-        let activeRouterId = '';
-        let activeRouterFilter = 'all';
-
-        const escapeRouterScriptString = (value = '') => String(value)
-            .replace(/\\/g, '\\\\')
-            .replace(/"/g, '\\"')
-            .replace(/\$/g, '\\$')
-            .replace(/\r?\n/g, '\\r\\n');
+        let hotspotUsers = [];
 
         const escapeHtml = (value = '') => String(value)
             .replace(/&/g, '&amp;')
@@ -369,13 +362,23 @@
 
             // Listen to active sessions (users with active vouchers)
             onSnapshot(collection(db, 'artifacts', appId, 'users', userId, 'vouchers'), snapshot => {
-                activeSessions = snapshot.docs
-                    .map(item => ({ id: item.id, ...item.data() }))
+                const voucherDocs = snapshot.docs.map(item => ({ id: item.id, ...item.data() }));
+
+                activeSessions = voucherDocs
                     .filter(v => v.status === 'active' && v.used === true && (!v.expiresAt || new Date(v.expiresAt) > new Date()))
                     .sort((a, b) => (a.code || '').localeCompare(b.code || ''));
+
+                const totalRevenue = voucherDocs
+                    .filter(v => v.used === true)
+                    .reduce((sum, voucher) => {
+                        const pkg = packages.find(p => p.id === voucher.packageId);
+                        return sum + (Number(pkg?.price || 0));
+                    }, 0);
+
                 const activeCount = activeSessions.length;
                 document.getElementById('stat-users').innerText = activeCount;
                 document.getElementById('active-sessions-count').innerText = activeCount;
+                document.getElementById('stat-revenue').innerText = `KES ${totalRevenue.toFixed(2)}`;
                 renderActiveSessions();
             });
 
@@ -392,6 +395,24 @@
                     if (typeof triggerRouterSync !== 'function') return;
                     for (const router of routers.filter(r => (r.status || 'offline') === 'online')) {
                         console.log(`[Auto-Sync PPPoE] Syncing ${pppoeUsers.length} PPPoE users to router ${router.name || router.ip}...`);
+                        await triggerRouterSync(router.id);
+                    }
+                })();
+            });
+
+            // Listen to Hotspot users
+            onSnapshot(collection(db, 'artifacts', appId, 'users', userId, 'hotspot-users'), snapshot => {
+                hotspotUsers = snapshot.docs
+                    .map(item => ({ id: item.id, ...item.data() }))
+                    .sort((a, b) => (a.username || '').localeCompare(b.username || ''));
+                document.getElementById('hotspot-user-count').innerText = hotspotUsers.length;
+                renderHotspotUsers();
+
+                // Auto-sync Hotspot users to routers when they change
+                (async () => {
+                    if (typeof triggerRouterSync !== 'function') return;
+                    for (const router of routers.filter(r => (r.status || 'offline') === 'online')) {
+                        console.log(`[Auto-Sync Hotspot] Syncing ${hotspotUsers.length} hotspot users to router ${router.name || router.ip}...`);
                         await triggerRouterSync(router.id);
                     }
                 })();
@@ -468,6 +489,8 @@
             document.getElementById('voucher-form').reset();
             document.getElementById('voucher-id').value = '';
             document.getElementById('voucher-code').value = randomCode();
+            document.getElementById('voucher-username').value = '';
+            document.getElementById('voucher-password').value = '';
             document.getElementById('voucher-status').value = 'active';
             document.getElementById('voucher-submit-btn').innerText = 'Save Voucher';
         };
@@ -485,6 +508,33 @@
             document.getElementById('pppoe-form').reset();
             document.getElementById('pppoe-id').value = '';
             document.getElementById('pppoe-submit-btn').innerText = 'Save PPPoE User';
+        };
+
+        const renderHotspotUsers = () => {
+            const list = document.getElementById('hotspot-user-list');
+            if (!hotspotUsers.length) {
+                list.innerHTML = '<div class="rounded-2xl border border-dashed border-slate-200 p-8 text-center text-slate-400">No hotspot users yet.</div>';
+                return;
+            }
+            list.innerHTML = hotspotUsers.map(user => [
+                '<div class="rounded-2xl border border-slate-200 p-5 flex items-center justify-between hover:bg-slate-50 transition">',
+                '<div>',
+                `<h4 class="font-bold text-slate-900">${escapeHtml(user.username || 'Hotspot User')}</h4>`,
+                `<p class="text-sm text-slate-500">${escapeHtml(user.status || 'active')} · ${escapeHtml(user.packageName || 'No package')} · Created ${new Date(user.createdAt || 0).toLocaleDateString()}</p>`,
+                '</div>',
+                '<div class="flex gap-2">',
+                `<button type="button" onclick="editHotspotUser('${user.id}')" class="px-3 py-1.5 text-sm rounded-lg bg-slate-100 text-slate-700 font-bold hover:bg-slate-200 transition">Edit</button>`,
+                `<button type="button" onclick="removeHotspotUser('${user.id}')" class="px-3 py-1.5 text-sm rounded-lg bg-red-50 text-red-600 font-bold hover:bg-red-100 transition">Delete</button>`,
+                '</div>',
+                '</div>'
+            ].join('')).join('');
+        };
+
+        const resetHotspotUserForm = () => {
+            document.getElementById('hotspot-user-form').reset();
+            document.getElementById('hotspot-user-id').value = '';
+            document.getElementById('hotspot-user-status').value = 'active';
+            document.getElementById('hotspot-user-submit-btn').innerText = 'Save Hotspot User';
         };
 
         const applyRouterToForm = (router) => {
@@ -584,16 +634,26 @@
         };
 
         const renderPackageOptions = () => {
-            const select = document.getElementById('voucher-package');
+            const voucherSelect = document.getElementById('voucher-package');
+            const hotspotSelect = document.getElementById('hotspot-user-package');
             if (!packages.length) {
-                select.innerHTML = '<option value="">Create a package first</option>';
-                select.disabled = true;
+                if (voucherSelect) voucherSelect.innerHTML = '<option value="">Create a package first</option>';
+                if (hotspotSelect) hotspotSelect.innerHTML = '<option value="">Create a package first</option>';
+                if (voucherSelect) voucherSelect.disabled = true;
+                if (hotspotSelect) hotspotSelect.disabled = true;
                 return;
             }
-            select.disabled = false;
-            select.innerHTML = packages.map(pkg =>
+            const optionsHtml = packages.map(pkg =>
                 `<option value="${pkg.id}">${escapeHtml(pkg.name)} - KES ${Number(pkg.price || 0).toFixed(2)}</option>`
             ).join('');
+            if (voucherSelect) {
+                voucherSelect.disabled = false;
+                voucherSelect.innerHTML = optionsHtml;
+            }
+            if (hotspotSelect) {
+                hotspotSelect.disabled = false;
+                hotspotSelect.innerHTML = optionsHtml;
+            }
         };
 
         const renderVouchers = () => {
@@ -653,12 +713,42 @@
             });
             const voucherUsers = vouchers.flatMap((voucher) => {
                 const relatedPackage = packages.find((pkg) => pkg.id === voucher.packageId);
-                const username = escapeRouterScriptString(String(voucher.code || 'voucher'));
-                const password = escapeRouterScriptString(String(voucher.code || 'voucher'));
+                const username = escapeRouterScriptString(String(voucher.username || voucher.code || 'voucher'));
+                const password = escapeRouterScriptString(String(voucher.password || voucher.code || 'voucher'));
                 const profileName = escapeRouterScriptString(String((relatedPackage && relatedPackage.name) || 'default'));
                 const comment = escapeRouterScriptString(`Voucher ${voucher.code || ''} | ${(voucher.status || 'active')}`);
-                return rosIfMissing(`find name="${username}"`, `add name="${username}" password="${password}" profile="${profileName}" server=hotspot1 comment="${comment}"`, `voucher ${username}`);
+                const isVoucherActive = (voucher.status || 'active') === 'active' && (!voucher.expiresAt || new Date(voucher.expiresAt) > new Date());
+
+                if (isVoucherActive) {
+                    return [
+                        ...rosIfMissing(`find name="${username}"`, `add name="${username}" password="${password}" profile="${profileName}" server=hotspot1 comment="${comment}" disabled=no`, `voucher ${username}`),
+                        ...rosIfExistsSet(`find name="${username}"`, `set [find name="${username}"] password="${password}" profile="${profileName}" comment="${comment}" disabled=no`, `voucher ${username}`)
+                    ];
+                }
+
+                // Expired or inactive voucher: disable on router
+                return [
+                    ...rosIfExistsSet(`find name="${username}"`, `set [find name="${username}"] disabled=yes comment="${comment}"`, `disabled voucher ${username}`)
+                ];
             });
+            const hotspotAccounts = hotspotUsers.flatMap((user) => {
+                const username = escapeRouterScriptString(String(user.username || 'hotspot'));
+                const password = escapeRouterScriptString(String(user.password || 'password'));
+                const profileName = escapeRouterScriptString(String((packages.find(p => p.id === user.packageId)?.name) || 'default'));
+                const comment = escapeRouterScriptString(`Hotspot ${user.username || ''} | ${(user.status || 'active')}`);
+
+                if ((user.status || 'active') === 'active') {
+                    return [
+                        ...rosIfMissing(`find name="${username}"`, `add name="${username}" password="${password}" profile="${profileName}" server=hotspot1 comment="${comment}" disabled=no`, `hotspot ${username}`),
+                        ...rosIfExistsSet(`find name="${username}"`, `set [find name="${username}"] password="${password}" profile="${profileName}" comment="${comment}" disabled=no`, `hotspot ${username}`)
+                    ];
+                }
+
+                return [
+                    ...rosIfExistsSet(`find name="${username}"`, `set [find name="${username}"] disabled=yes comment="${comment}"`, `disable hotspot ${username}`)
+                ];
+            });
+
             const pppoeAccounts = pppoeUsers.flatMap((user) => {
                 const username = escapeRouterScriptString(String(user.username || 'pppoe'));
                 const password = escapeRouterScriptString(String(user.password || 'password'));
@@ -706,7 +796,7 @@
                 '/ip hotspot user profile',
                 ...rosIfMissing('find name="default"', 'add name=default shared-users=1 transparent-proxy=yes', 'default hotspot user profile'),
                 ...packageProfiles,
-                ...(voucherUsers.length ? ['', '/ip hotspot user', ...voucherUsers] : []),
+                ...(voucherUsers.length || hotspotAccounts.length ? ['', '/ip hotspot user', ...voucherUsers, ...hotspotAccounts] : []),
                 '',
                 '/ppp/secret',
                 ...pppoeAccounts,
@@ -851,7 +941,10 @@
 
         document.getElementById('package-form').addEventListener('submit', async (e) => {
             e.preventDefault();
-            if (!currentUser) return;
+            if (!currentUser) {
+                alert('Authentication error: Not signed in. Please refresh and try again.');
+                return;
+            }
             const id = document.getElementById('package-id').value;
             const payload = {
                 name: document.getElementById('package-name').value.trim(),
@@ -859,12 +952,24 @@
                 durationHours: Number(document.getElementById('package-duration').value || 0),
                 updatedAt: Date.now()
             };
-            if (id) {
-                await updateDoc(doc(db, 'artifacts', appId, 'users', currentUser.uid, 'packages', id), payload);
-            } else {
-                await addDoc(collection(db, 'artifacts', appId, 'users', currentUser.uid, 'packages'), payload);
+
+            if (!payload.name || payload.price <= 0 || payload.durationHours <= 0) {
+                alert('Please provide a valid name, price, and duration for the package.');
+                return;
             }
-            resetPackageForm();
+
+            try {
+                if (id) {
+                    await updateDoc(doc(db, 'artifacts', appId, 'users', currentUser.uid, 'packages', id), payload);
+                } else {
+                    payload.createdAt = Date.now();
+                    await addDoc(collection(db, 'artifacts', appId, 'users', currentUser.uid, 'packages'), payload);
+                }
+                resetPackageForm();
+            } catch (error) {
+                console.error("Error saving package to Firestore:", error);
+                alert(`Failed to save package. This is often due to Firestore security rules.\n\nError: ${error.message}`);
+            }
         });
 
         document.getElementById('voucher-form').addEventListener('submit', async (e) => {
@@ -873,6 +978,8 @@
             const id = document.getElementById('voucher-id').value;
             const payload = {
                 code: document.getElementById('voucher-code').value.trim().toUpperCase(),
+                username: document.getElementById('voucher-username').value.trim(),
+                password: document.getElementById('voucher-password').value.trim(),
                 packageId: document.getElementById('voucher-package').value,
                 status: document.getElementById('voucher-status').value,
                 updatedAt: Date.now()
@@ -883,6 +990,29 @@
                 await addDoc(collection(db, 'artifacts', appId, 'users', currentUser.uid, 'vouchers'), payload);
             }
             resetVoucherForm();
+        });
+
+        document.getElementById('hotspot-user-form').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            if (!currentUser) return;
+            const id = document.getElementById('hotspot-user-id').value;
+            const payload = {
+                username: document.getElementById('hotspot-user-username').value.trim(),
+                password: document.getElementById('hotspot-user-password').value.trim(),
+                packageId: document.getElementById('hotspot-user-package').value,
+                packageName: packages.find(p => p.id === document.getElementById('hotspot-user-package').value)?.name || '',
+                status: document.getElementById('hotspot-user-status').value,
+                updatedAt: Date.now(),
+            };
+            if (id) {
+                await updateDoc(doc(db, 'artifacts', appId, 'users', currentUser.uid, 'hotspot-users', id), payload);
+            } else {
+                await addDoc(collection(db, 'artifacts', appId, 'users', currentUser.uid, 'hotspot-users'), {
+                    ...payload,
+                    createdAt: Date.now(),
+                });
+            }
+            resetHotspotUserForm();
         });
 
         document.getElementById('pppoe-form').addEventListener('submit', async (e) => {
@@ -908,6 +1038,7 @@
 
         document.getElementById('package-reset-btn').addEventListener('click', resetPackageForm);
         document.getElementById('voucher-reset-btn').addEventListener('click', resetVoucherForm);
+        document.getElementById('hotspot-user-reset-btn').addEventListener('click', resetHotspotUserForm);
         document.getElementById('pppoe-reset-btn').addEventListener('click', resetPppoeForm);
         document.getElementById('router-reset-btn').addEventListener('click', resetRouterForm);
         document.getElementById('router-search').addEventListener('input', renderRouters);
@@ -953,6 +1084,24 @@
             if (!currentUser || !confirm('Delete this voucher?')) return;
             await deleteDoc(doc(db, 'artifacts', appId, 'users', currentUser.uid, 'vouchers', id));
             if (document.getElementById('voucher-id').value === id) resetVoucherForm();
+        };
+
+        window.editHotspotUser = (id) => {
+            const user = hotspotUsers.find(item => item.id === id);
+            if (!user) return;
+            document.getElementById('hotspot-user-id').value = user.id;
+            document.getElementById('hotspot-user-username').value = user.username || '';
+            document.getElementById('hotspot-user-password').value = user.password || '';
+            document.getElementById('hotspot-user-package').value = user.packageId || '';
+            document.getElementById('hotspot-user-status').value = user.status || 'active';
+            document.getElementById('hotspot-user-submit-btn').innerText = 'Update Hotspot User';
+            window.switchTab('hotspot-users');
+        };
+
+        window.removeHotspotUser = async (id) => {
+            if (!currentUser || !confirm('Delete this hotspot user?')) return;
+            await deleteDoc(doc(db, 'artifacts', appId, 'users', currentUser.uid, 'hotspot-users', id));
+            if (document.getElementById('hotspot-user-id').value === id) resetHotspotUserForm();
         };
 
         window.editRouter = (id) => {
@@ -1051,4 +1200,3 @@
         resetVoucherForm();
         resetPppoeForm();
         resetRouterForm();
-

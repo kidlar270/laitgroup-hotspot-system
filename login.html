@@ -392,10 +392,21 @@
                         <label class="label" for="voucher-code">Voucher Code</label>
                         <div class="input-wrap">
                             <div class="input-icon">#</div>
-                            <input class="input" id="voucher-code" type="text" name="username" placeholder="Enter your voucher">
+                            <input class="input" id="voucher-code" type="text" name="voucherCode" placeholder="Enter voucher code">
                         </div>
-                        <input id="voucher-password" type="hidden" name="password" value="">
-                        <div class="hint"> Input reconnection code</div>
+                        <label class="label" for="hotspot-username">Hotspot Username</label>
+                        <div class="input-wrap">
+                            <div class="input-icon">U</div>
+                            <input class="input" id="hotspot-username" type="text" name="hotspotUsername" placeholder="Optional username">
+                        </div>
+                        <label class="label" for="hotspot-password">Hotspot Password</label>
+                        <div class="input-wrap">
+                            <div class="input-icon">P</div>
+                            <input class="input" id="hotspot-password" type="password" name="hotspotPassword" placeholder="Optional password">
+                        </div>
+                        <input id="auth-username" type="hidden" name="username" value="">
+                        <input id="auth-password" type="hidden" name="password" value="">
+                        <div class="hint">You can login with voucher code or username + password (hotspot account).
                         <button class="action-btn voucher-btn" type="submit">Activate Voucher</button>
                         <div class="status info" id="voucher-status"></div>
                     </form>
@@ -509,7 +520,7 @@
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
         import { getAuth, signInAnonymously } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-        import { getFirestore, collection, getDocs, query, where } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { getFirestore, collection, getDocs, query, where, doc, updateDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
         const firebaseConfig = {
             apiKey: "AIzaSyADfXnmdXjeRbEewPCSrsKMDFXvIjTRsuA",
@@ -704,7 +715,10 @@
         const shortTermTarget = document.getElementById("short-term-packages");
         const voucherForm = document.getElementById("voucher-form");
         const voucherCodeInput = document.getElementById("voucher-code");
-        const voucherPasswordInput = document.getElementById("voucher-password");
+        const hotspotUsernameInput = document.getElementById("hotspot-username");
+        const hotspotPasswordInput = document.getElementById("hotspot-password");
+        const authUsernameInput = document.getElementById("auth-username");
+        const authPasswordInput = document.getElementById("auth-password");
         const voucherStatus = document.getElementById("voucher-status");
         const paymentStatus = document.getElementById("payment-status");
         const stkPushButton = document.getElementById("stk-push-btn");
@@ -719,6 +733,7 @@
             .replace(/'/g, "&#39;");
 
         let selectedPackage = null;
+        let availablePackages = [];
 
         const readCachedPackages = () => {
             if (!ownerId) {
@@ -737,6 +752,29 @@
         const setStatus = (element, kind, message) => {
             element.className = `status show ${kind}`;
             element.textContent = message;
+        };
+
+        const markVoucherAsUsed = async (voucher) => {
+            if (!ownerId || !voucher?.id) return;
+
+            const packageItem = availablePackages.find((p) => p.id === voucher.packageId);
+            const durationHours = Number(packageItem?.durationHours || 0);
+            const now = Date.now();
+            const updatePayload = {
+                used: true,
+                activatedAt: new Date(now).toISOString(),
+                updatedAt: Date.now(),
+            };
+
+            if (durationHours > 0) {
+                updatePayload.expiresAt = new Date(now + durationHours * 60 * 60 * 1000).toISOString();
+            }
+
+            try {
+                await updateDoc(doc(db, "artifacts", appId, "users", ownerId, "vouchers", voucher.id), updatePayload);
+            } catch (error) {
+                console.warn("Could not flag voucher as used:", error);
+            }
         };
 
         const renderPackages = (target, items) => {
@@ -775,11 +813,11 @@
 
             try {
                 const snapshot = await getDocs(collection(db, "artifacts", appId, "users", ownerId, "packages"));
-                const packages = snapshot.docs.map((docItem) => ({ id: docItem.id, ...docItem.data() }))
+                availablePackages = snapshot.docs.map((docItem) => ({ id: docItem.id, ...docItem.data() }))
                     .sort((a, b) => (a.name || "").localeCompare(b.name || ""));
-                renderPackages(shortTermTarget, packages);
-                packagesNote.textContent = packages.length
-                    ? `Loaded ${packages.length} live package${packages.length === 1 ? "" : "s"} from the dashboard.`
+                renderPackages(shortTermTarget, availablePackages);
+                packagesNote.textContent = availablePackages.length
+                    ? `Loaded ${availablePackages.length} live package${availablePackages.length === 1 ? "" : "s"} from the dashboard.`
                     : "No packages have been added in the dashboard yet.";
             } catch (error) {
                 console.error("Package sync failed:", error);
@@ -791,11 +829,8 @@
         voucherForm.addEventListener("submit", async (event) => {
             event.preventDefault();
             const voucherCode = voucherCodeInput.value.trim().toUpperCase();
-
-            if (!voucherCode) {
-                setStatus(voucherStatus, "error", "Enter your voucher code first.");
-                return;
-            }
+            const manualUser = hotspotUsernameInput.value.trim();
+            const manualPass = hotspotPasswordInput.value;
 
             if (!ownerId) {
                 setStatus(voucherStatus, "error", "This portal is not linked to a dashboard owner yet.");
@@ -803,31 +838,54 @@
             }
 
             try {
-                setStatus(voucherStatus, "info", "Checking voucher with Firebase...");
-                const voucherQuery = query(
-                    collection(db, "artifacts", appId, "users", ownerId, "vouchers"),
-                    where("code", "==", voucherCode)
-                );
-                const voucherSnapshot = await getDocs(voucherQuery);
+                setStatus(voucherStatus, "info", "Checking credentials with Firebase...");
 
-                if (voucherSnapshot.empty) {
-                    setStatus(voucherStatus, "error", "Voucher not found. Please check the code and try again.");
+                let matchedVoucher = null;
+
+                if (manualUser && manualPass) {
+                    const usernameQuery = query(
+                        collection(db, "artifacts", appId, "users", ownerId, "vouchers"),
+                        where("username", "==", manualUser)
+                    );
+                    const usernameSnapshot = await getDocs(usernameQuery);
+                    matchedVoucher = usernameSnapshot.docs.map(d => ({ id: d.id, ...d.data() }))
+                        .find(v => v.password === manualPass);
+                    if (!matchedVoucher) {
+                        setStatus(voucherStatus, "error", "Invalid hotspot username or password.");
+                        return;
+                    }
+                } else if (voucherCode) {
+                    const voucherQuery = query(
+                        collection(db, "artifacts", appId, "users", ownerId, "vouchers"),
+                        where("code", "==", voucherCode)
+                    );
+                    const voucherSnapshot = await getDocs(voucherQuery);
+                    if (voucherSnapshot.empty) {
+                        setStatus(voucherStatus, "error", "Voucher not found. Please check the code and try again.");
+                        return;
+                    }
+                    matchedVoucher = { id: voucherSnapshot.docs[0].id, ...voucherSnapshot.docs[0].data() };
+                } else {
+                    setStatus(voucherStatus, "error", "Enter a voucher code or username/password first.");
                     return;
                 }
 
-                const voucher = voucherSnapshot.docs[0].data();
-                if ((voucher.status || "active") !== "active") {
-                    setStatus(voucherStatus, "error", `This voucher is ${voucher.status || "not active"}.`);
+                if ((matchedVoucher.status || "active") !== "active") {
+                    setStatus(voucherStatus, "error", `This voucher is ${matchedVoucher.status || "not active"}.`);
                     return;
                 }
 
-                voucherCodeInput.value = voucherCode;
-                voucherPasswordInput.value = voucherCode;
-                setStatus(voucherStatus, "success", "Voucher verified. Opening internet access...");
+                // mark voucher as active session (billing record)
+                await markVoucherAsUsed(matchedVoucher);
+
+                authUsernameInput.value = matchedVoucher.username || matchedVoucher.code || "";
+                authPasswordInput.value = matchedVoucher.password || matchedVoucher.code || "";
+
+                setStatus(voucherStatus, "success", "Credentials verified. Opening internet access...");
                 window.setTimeout(() => voucherForm.submit(), 500);
             } catch (error) {
-                console.error("Voucher check failed:", error);
-                setStatus(voucherStatus, "error", "Could not verify voucher right now. Please try again.");
+                console.error("Credential check failed:", error);
+                setStatus(voucherStatus, "error", "Could not verify credentials right now. Please try again.");
             }
         });
 
