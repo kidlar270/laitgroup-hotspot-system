@@ -424,6 +424,14 @@ exports.checkRouterHealth = onRequest(
     timeoutSeconds: 30,
   },
   async (req, res) => {
+    // CORS headers for browser-based calls from local dev or different origin.
+    res.set('Access-Control-Allow-Origin', '*');
+    res.set('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
+    res.set('Access-Control-Allow-Headers', 'Content-Type');
+    if (req.method === 'OPTIONS') {
+      return res.status(204).send('');
+    }
+
     try {
       const { appId, userId, routerId } = req.query;
 

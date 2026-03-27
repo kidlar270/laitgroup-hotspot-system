@@ -23,6 +23,8 @@
         let activeSessions = [];
         let pppoeUsers = [];
         let hotspotUsers = [];
+        let activeRouterFilter = 'all';
+        let activeRouterId = '';
 
         const escapeHtml = (value = '') => String(value)
             .replace(/&/g, '&amp;')
@@ -30,6 +32,14 @@
             .replace(/>/g, '&gt;')
             .replace(/"/g, '&quot;')
             .replace(/'/g, '&#39;');
+
+        const escapeRouterScriptString = (value = '') => {
+            return String(value)
+                .replace(/\\/g, '\\\\')
+                .replace(/"/g, '\\"')
+                .replace(/\n/g, '\\n')
+                .replace(/\r/g, '\\r');
+        };
 
         const buildPortalHtml = () => {
             const routerName = escapeHtml(document.getElementById('router-name')?.value || document.getElementById('router-ip').value || 'HotspotPro');
@@ -170,8 +180,8 @@
                 'const stkPushButton=document.getElementById("stk-push-btn");',
                 'const mpesaNumberInput=document.getElementById("mpesa-number");',
                 'const setStatus=(element,kind,message)=>{element.className=`status show ${kind}`;element.textContent=message;};',
-                'const renderPackages=(target,items)=>{if(!items.length){target.innerHTML=\'<div class="empty-state">No packages available yet.</div>\';return;}target.innerHTML=items.map((pkg)=>{const price=Number(pkg.price||0).toFixed(0);const hours=Number(pkg.durationHours||0);const durationLabel=hours>=24&&hours%24===0?`${hours/24} Day${hours/24===1?"":"s"}`:`${hours} Hour${hours===1?"":"s"}`;return [`<div class="plan-card">`,`<div class="plan-title">${durationLabel}</div>`,`<div class="plan-price">${price}<span>KSH</span></div>`,`<div class="plan-name">${escapeHtml(pkg.name||"Package")}</div>`,`</div>`].join("");}).join("");};',
-                'const syncPackages=async()=>{if(!ownerId){renderPackages(shortTermTarget,[]);renderPackages(longTermTarget,[]);return;}try{const snapshot=await getDocs(collection(db,"artifacts",appId,"users",ownerId,"packages"));const packages=snapshot.docs.map((docItem)=>({id:docItem.id,...docItem.data()})).sort((a,b)=>(a.name||"").localeCompare(b.name||""));renderPackages(shortTermTarget,packages.filter((pkg)=>Number(pkg.durationHours||0)<=24));renderPackages(longTermTarget,packages.filter((pkg)=>Number(pkg.durationHours||0)>24));}catch(error){console.error("Package sync failed:",error);shortTermTarget.innerHTML=\'<div class="empty-state">Could not load packages.</div>\';longTermTarget.innerHTML=\'<div class="empty-state">Could not load packages.</div>\';}};',
+                'const renderPackages=(target,items)=>{if(!items.length){target.innerHTML=\'<div class="empty-state">No packages available yet.</div>\';return;}target.innerHTML=items.map((pkg)=>{const price=Number(pkg.price||0).toFixed(0);const hours=Number(pkg.durationHours||0);const durationLabel=hours>=24&&hours%24===0?`${hours/24} Day${hours/24===1?"":"s"}`:`${hours} Hour${hours===1?"":"s"}`;const speedLabel=(pkg.downloadSpeed||pkg.uploadSpeed)?` ${pkg.downloadSpeed||0}/${pkg.uploadSpeed||0} Mbps`:\"\";return [`<div class="plan-card">`,`<div class="plan-title">${durationLabel}</div>`,`<div class="plan-price">${price}<span>KSH</span></div>`,`<div class="plan-name">${escapeHtml(pkg.name||"Package")}${speedLabel}</div>`,`</div>`].join("");}).join("");};',
+                'const syncPackages=async()=>{if(!ownerId){renderPackages(shortTermTarget,[]);renderPackages(longTermTarget,[]);return;}try{const snapshot=await getDocs(collection(db,"artifacts",appId,"users",ownerId,"packages"));const packages=snapshot.docs.map((docItem)=>({id:docItem.id,...docItem.data()})).filter((pkg)=>(pkg.type||"hotspot")==="hotspot").sort((a,b)=>(a.name||"").localeCompare(b.name||""));renderPackages(shortTermTarget,packages.filter((pkg)=>Number(pkg.durationHours||0)<=24));renderPackages(longTermTarget,packages.filter((pkg)=>Number(pkg.durationHours||0)>24));}catch(error){console.error("Package sync failed:",error);shortTermTarget.innerHTML=\'<div class="empty-state">Could not load packages.</div>\';longTermTarget.innerHTML=\'<div class="empty-state">Could not load packages.</div>\';}};',
                 'voucherForm.addEventListener("submit",async(event)=>{event.preventDefault();const voucherCode=voucherCodeInput.value.trim().toUpperCase();if(!voucherCode){setStatus(voucherStatus,"error","Enter your voucher code first.");return;}if(!ownerId){setStatus(voucherStatus,"error","This portal is not linked to a dashboard owner yet.");return;}try{setStatus(voucherStatus,"info","Checking voucher with Firebase...");const voucherQuery=query(collection(db,"artifacts",appId,"users",ownerId,"vouchers"),where("code","==",voucherCode));const voucherSnapshot=await getDocs(voucherQuery);if(voucherSnapshot.empty){setStatus(voucherStatus,"error","Voucher not found. Please check the code and try again.");return;}const voucher=voucherSnapshot.docs[0].data();if((voucher.status||"active")!=="active"){setStatus(voucherStatus,"error",`This voucher is ${voucher.status||"not active"}.`);return;}voucherCodeInput.value=voucherCode;voucherPasswordInput.value=voucherCode;setStatus(voucherStatus,"success","Voucher verified. Opening internet access...");window.setTimeout(()=>voucherForm.submit(),500);}catch(error){console.error("Voucher check failed:",error);setStatus(voucherStatus,"error","Could not verify voucher right now. Please try again.");}});',
                 'stkPushButton.addEventListener("click",()=>{const phone=mpesaNumberInput.value.trim();if(!phone){setStatus(paymentStatus,"error","Enter your M-Pesa number first.");return;}setStatus(paymentStatus,"info","STK Push UI is ready. Connect your backend or Firebase Function to trigger the real payment request.");});',
                 'try{await signInAnonymously(auth);await syncPackages();window.setInterval(syncPackages,7000);}catch(error){console.error("Firebase auth failed:",error);setStatus(voucherStatus,"error","Firebase authentication failed on the portal.");}',
@@ -465,24 +475,57 @@
                 list.innerHTML = '<div class="rounded-2xl border border-dashed border-slate-200 p-8 text-center text-slate-400">No PPPoE users yet.</div>';
                 return;
             }
-            list.innerHTML = pppoeUsers.map(user => [
-                '<div class="rounded-2xl border border-slate-200 p-5 flex items-center justify-between hover:bg-slate-50 transition">',
-                '<div>',
-                `<h4 class="font-bold text-slate-900">${escapeHtml(user.username || 'PPPoE User')}</h4>`,
-                `<p class="text-sm text-slate-500">${escapeHtml(user.name || 'No name')} · Created ${new Date(user.createdAt || 0).toLocaleDateString()}</p>`,
-                '</div>',
-                '<div class="flex gap-2">',
-                `<button type="button" onclick="editPppoeUser('${user.id}')" class="px-3 py-1.5 text-sm rounded-lg bg-slate-100 text-slate-700 font-bold hover:bg-slate-200 transition">Edit</button>`,
-                `<button type="button" onclick="removePppoeUser('${user.id}')" class="px-3 py-1.5 text-sm rounded-lg bg-red-50 text-red-600 font-bold hover:bg-red-100 transition">Delete</button>`,
-                '</div>',
-                '</div>'
-            ].join('')).join('');
+            const pppoeActiveUsernames = new Set(activeSessions.map(s => String(s.username || '').toLowerCase()));
+
+            list.innerHTML = pppoeUsers.map(user => {
+                const now = new Date();
+                const expiresAt = user.expiresAt ? new Date(user.expiresAt) : null;
+                const isUserExpired = expiresAt && expiresAt <= now;
+                const isOnline = pppoeActiveUsernames.has(String(user.username || '').toLowerCase()) && !isUserExpired && (user.status || 'active') === 'active';
+
+                let status = 'offline';
+                let statusClass = 'slate';
+
+                if (isUserExpired) {
+                    status = 'expired';
+                    statusClass = 'rose';
+                } else if (isOnline) {
+                    status = 'online';
+                    statusClass = 'emerald';
+                } else if ((user.status || 'active') === 'active') {
+                    status = 'idle';
+                    statusClass = 'amber';
+                } else {
+                    status = 'offline';
+                    statusClass = 'slate';
+                }
+
+                return [
+                    '<div class="rounded-2xl border border-slate-200 p-5 flex items-center justify-between hover:bg-slate-50 transition">',
+                    '<div>',
+                    `<h4 class="font-bold text-slate-900">${escapeHtml(user.username || 'PPPoE User')}</h4>`,
+                    `<p class="text-sm text-slate-500">${escapeHtml(user.name || 'No name')} · ${escapeHtml(user.packageName || 'No package')} · Created ${new Date(user.createdAt || 0).toLocaleDateString()}</p>`,
+                    `<p class="text-xs font-bold uppercase tracking-wider text-${statusClass}-600">${status.toUpperCase()}${expiresAt ? ` · Expires ${expiresAt.toLocaleString()}` : ''}</p>`,
+                    '</div>',
+                    '<div class="flex gap-2">',
+                    `<button type="button" onclick="editPppoeUser('${user.id}')" class="px-3 py-1.5 text-sm rounded-lg bg-slate-100 text-slate-700 font-bold hover:bg-slate-200 transition">Edit</button>`,
+                    `<button type="button" onclick="removePppoeUser('${user.id}')" class="px-3 py-1.5 text-sm rounded-lg bg-red-50 text-red-600 font-bold hover:bg-red-100 transition">Delete</button>`,
+                    `${status === 'online' ? `<button type="button" onclick="terminatePppoeUser('${user.id}')" class="px-3 py-1.5 text-sm rounded-lg bg-amber-50 text-amber-700 font-bold hover:bg-amber-100 transition">Terminate</button>` : `<button type="button" onclick="reconnectPppoeUser('${user.id}')" class="px-3 py-1.5 text-sm rounded-lg bg-blue-50 text-blue-700 font-bold hover:bg-blue-100 transition">Reconnect</button>`}`,
+                    '</div>',
+                    '</div>'
+                ].join('');
+            }).join('');
         };
 
         const resetPackageForm = () => {
             document.getElementById('package-form').reset();
             document.getElementById('package-id').value = '';
+            document.getElementById('package-expires-at').value = '';
+            document.getElementById('package-duration').value = '';
+            document.getElementById('package-duration-unit').value = 'hours';
+            document.getElementById('package-type').value = 'hotspot';
             document.getElementById('package-submit-btn').innerText = 'Save Package';
+            togglePackageDurationFields();
         };
 
         const resetVoucherForm = () => {
@@ -507,6 +550,8 @@
         const resetPppoeForm = () => {
             document.getElementById('pppoe-form').reset();
             document.getElementById('pppoe-id').value = '';
+            document.getElementById('pppoe-expires-at').value = '';
+            document.getElementById('pppoe-status').value = 'active';
             document.getElementById('pppoe-submit-btn').innerText = 'Save PPPoE User';
         };
 
@@ -559,6 +604,47 @@
             });
         };
 
+        window.loginToMikrotik = async (routerId) => {
+            if (!currentUser || !routerId) return;
+            const router = routers.find(r => r.id === routerId);
+            if (!router) {
+                alert('Router not found.');
+                return;
+            }
+
+            try {
+                document.getElementById('router-status-text').innerText = `${router.name || router.ip} logging in...`;
+                const response = await fetch(
+                    `https://us-central1-${appId}.cloudfunctions.net/checkRouterHealth?appId=${appId}&userId=${currentUser.uid}&routerId=${routerId}`,
+                    {
+                        method: 'GET',
+                        mode: 'cors',
+                        credentials: 'omit',
+                        headers: {
+                            'Content-Type': 'application/json'
+                        }
+                    }
+                );
+                const result = await response.json();
+                if (result.status === 'online') {
+                    document.getElementById('router-status-indicator').className = 'w-2 h-2 rounded-full bg-green-500 animate-pulse';
+                    document.getElementById('router-status-text').innerText = `${router.name || router.ip} online`;
+                } else {
+                    document.getElementById('router-status-indicator').className = 'w-2 h-2 rounded-full bg-rose-500';
+                    document.getElementById('router-status-text').innerText = `${router.name || router.ip} offline`; 
+                }
+                if (typeof triggerRouterSync === 'function') {
+                    await triggerRouterSync(routerId);
+                }
+                alert(`Router ${router.name || router.ip} is ${result.status}. Sync triggered.`);
+            } catch (error) {
+                console.error('Login and sync failed:', error);
+                alert(`Could not login/sync router: ${error.message || error}`);
+                document.getElementById('router-status-indicator').className = 'w-2 h-2 rounded-full bg-rose-500';
+                document.getElementById('router-status-text').innerText = `${router.name || router.ip} login failed`;
+            }
+        };
+
         const renderRouters = () => {
             const list = document.getElementById('routers-list');
             if (!list) return;
@@ -600,6 +686,7 @@
                     '<td class="px-5 py-4 text-right">',
                     `<div class="flex justify-end gap-2 flex-wrap">
                         <button type="button" onclick="checkRouterHealth('${router.id}')" class="px-3 py-2 text-xs rounded-lg bg-blue-50 text-blue-600 font-bold hover:bg-blue-100 transition">Check Status</button>
+                        <button type="button" onclick="loginToMikrotik('${router.id}')" class="px-3 py-2 text-xs rounded-lg bg-indigo-50 text-indigo-600 font-bold hover:bg-indigo-100 transition">Login & Sync</button>
                         <button type="button" onclick="editRouter('${router.id}')" class="px-4 py-2 rounded-xl bg-slate-100 text-slate-700 font-bold">Edit</button>
                         <button type="button" onclick="toggleRouterStatus('${router.id}')" class="px-4 py-2 rounded-xl bg-amber-50 text-amber-700 font-bold">${status === 'online' ? 'Mark Offline' : 'Mark Online'}</button>
                         <button type="button" onclick="removeRouter('${router.id}')" class="px-4 py-2 rounded-xl bg-red-50 text-red-600 font-bold">Delete</button>
@@ -617,42 +704,66 @@
                 list.innerHTML = '<div class="rounded-2xl border border-dashed border-slate-200 p-8 text-center text-slate-400">No packages yet.</div>';
                 return;
             }
-            list.innerHTML = packages.map(pkg => [
-                '<div class="rounded-2xl border border-slate-200 p-5">',
-                '<div class="flex items-center justify-between gap-4">',
-                '<div>',
-                `<h4 class="text-lg font-bold text-slate-900">${escapeHtml(pkg.name)}</h4>`,
-                `<p class="text-sm text-slate-500">KES ${Number(pkg.price || 0).toFixed(2)} | ${pkg.durationHours || 0} hrs</p>`,
-                '</div>',
-                '<div class="flex gap-2">',
-                `<button type="button" onclick="editPackage('${pkg.id}')" class="px-4 py-2 rounded-xl bg-slate-100 text-slate-700 font-bold">Edit</button>`,
-                `<button type="button" onclick="removePackage('${pkg.id}')" class="px-4 py-2 rounded-xl bg-red-50 text-red-600 font-bold">Delete</button>`,
-                '</div>',
-                '</div>',
-                '</div>'
-            ].join('')).join('');
+            list.innerHTML = packages.map(pkg => {
+                const durationText = (pkg.type || 'hotspot') === 'pppoe'
+                    ? 'No duration (PPPoE managed per user)'
+                    : `${Number((pkg.durationMinutes || 0) / 60).toFixed(0)} hrs`;
+
+                return [
+                    '<div class="rounded-2xl border border-slate-200 p-5">',
+                    '<div class="flex items-center justify-between gap-4">',
+                    '<div>',
+                    `<h4 class="text-lg font-bold text-slate-900">${escapeHtml(pkg.name)}</h4>`,
+                    `<p class="text-sm text-slate-500">KES ${Number(pkg.price || 0).toFixed(2)} | ${durationText} | ${escapeHtml((pkg.type || 'hotspot').toUpperCase())} | ${pkg.downloadSpeed || 0}/${pkg.uploadSpeed || 0} Mbps</p>`,
+                    '</div>',
+                    '<div class="flex gap-2">',
+                    `<button type="button" onclick="editPackage('${pkg.id}')" class="px-4 py-2 rounded-xl bg-slate-100 text-slate-700 font-bold">Edit</button>`,
+                    `<button type="button" onclick="removePackage('${pkg.id}')" class="px-4 py-2 rounded-xl bg-red-50 text-red-600 font-bold">Delete</button>`,
+                    '</div>',
+                    '</div>',
+                    '</div>'
+                ].join('');
+            }).join('');
         };
 
         const renderPackageOptions = () => {
             const voucherSelect = document.getElementById('voucher-package');
             const hotspotSelect = document.getElementById('hotspot-user-package');
+            const pppoeSelect = document.getElementById('pppoe-package');
             if (!packages.length) {
                 if (voucherSelect) voucherSelect.innerHTML = '<option value="">Create a package first</option>';
                 if (hotspotSelect) hotspotSelect.innerHTML = '<option value="">Create a package first</option>';
+                if (pppoeSelect) pppoeSelect.innerHTML = '<option value="">Create a package first</option>';
                 if (voucherSelect) voucherSelect.disabled = true;
                 if (hotspotSelect) hotspotSelect.disabled = true;
+                if (pppoeSelect) pppoeSelect.disabled = true;
                 return;
             }
-            const optionsHtml = packages.map(pkg =>
+            const hotspotPackages = packages.filter(p => (p.type || 'hotspot') === 'hotspot');
+            const pppoePackages = packages.filter(p => p.type === 'pppoe');
+            const allPackages = packages;
+
+            const voucherOptions = allPackages.map(pkg =>
                 `<option value="${pkg.id}">${escapeHtml(pkg.name)} - KES ${Number(pkg.price || 0).toFixed(2)}</option>`
             ).join('');
+            const hotspotOptions = hotspotPackages.map(pkg =>
+                `<option value="${pkg.id}">${escapeHtml(pkg.name)} - KES ${Number(pkg.price || 0).toFixed(2)}</option>`
+            ).join('');
+            const pppoeOptions = pppoePackages.map(pkg =>
+                `<option value="${pkg.id}">${escapeHtml(pkg.name)} - KES ${Number(pkg.price || 0).toFixed(2)}</option>`
+            ).join('');
+
             if (voucherSelect) {
                 voucherSelect.disabled = false;
-                voucherSelect.innerHTML = optionsHtml;
+                voucherSelect.innerHTML = voucherOptions;
             }
             if (hotspotSelect) {
                 hotspotSelect.disabled = false;
-                hotspotSelect.innerHTML = optionsHtml;
+                hotspotSelect.innerHTML = hotspotOptions;
+            }
+            if (pppoeSelect) {
+                pppoeSelect.disabled = false;
+                pppoeSelect.innerHTML = pppoeOptions;
             }
         };
 
@@ -706,11 +817,38 @@
             const statusHtml = escapeRouterScriptString('<html><head><meta http-equiv="refresh" content="4; url=https://www.google.com"></head><body style="font-family:Arial,sans-serif;text-align:center;padding:40px;background:#f8fafc;"><h2>Connected</h2><p>Your internet access is active.</p><p>Redirecting to Google in a few seconds...</p><p><a href="https://www.google.com">Open Google now</a></p><p><a href="$(link-logout)">Log out</a></p></body></html>');
             const errorHtml = escapeRouterScriptString('<html><body style="font-family:Arial,sans-serif;text-align:center;padding:40px;background:#fff7ed;"><h2>Login failed</h2><p>Please try your voucher again.</p><p><a href="$(link-login)">Back to login</a></p></body></html>');
             const ssid = escapeRouterScriptString(document.getElementById('router-ssid').value.trim() || 'Lait Automatically');
-            const packageProfiles = packages.flatMap((pkg) => {
+            const hotspotPackages = packages.filter(p => (p.type || 'hotspot') === 'hotspot');
+            const pppoePackages = packages.filter(p => p.type === 'pppoe');
+            const hotspotProfiles = hotspotPackages.flatMap((pkg) => {
                 const profileName = escapeRouterScriptString(String(pkg.name || 'Package'));
                 const sharedUsers = '1';
-                return rosIfMissing(`find name="${profileName}"`, `add name="${profileName}" shared-users=${sharedUsers}`, `profile ${profileName}`);
+                const durationMinutes = Number(pkg.durationMinutes || (pkg.durationHours ? pkg.durationHours * 60 : 1440));
+                const sessionTimeout = `${Math.max(1, Math.ceil(durationMinutes / 60))}h`;
+                const downloadSpeed = Number(pkg.downloadSpeed || 0);
+                const uploadSpeed = Number(pkg.uploadSpeed || 0);
+                const rateLimit = downloadSpeed > 0 && uploadSpeed > 0 ? `${downloadSpeed}M/${uploadSpeed}M` : '';
+                const rateLimitParam = rateLimit ? ` rate-limit=${rateLimit}` : '';
+                return [
+                    ...rosIfMissing(`find name="${profileName}"`, `add name="${profileName}" shared-users=${sharedUsers} session-timeout=${sessionTimeout}${rateLimitParam}`, `profile ${profileName}`),
+                    ...rosIfExistsSet(`find name="${profileName}"`, `set [find name="${profileName}"] shared-users=${sharedUsers} session-timeout=${sessionTimeout}${rateLimitParam}`, `profile ${profileName}`)
+                ];
             });
+            const pppoeProfiles = pppoePackages.flatMap((pkg) => {
+                const profileName = escapeRouterScriptString(String(pkg.name || 'Package'));
+                const downloadSpeed = Number(pkg.downloadSpeed || 0);
+                const uploadSpeed = Number(pkg.uploadSpeed || 0);
+                const rateLimit = downloadSpeed > 0 && uploadSpeed > 0 ? `${downloadSpeed}M/${uploadSpeed}M` : '';
+                const rateLimitParam = rateLimit ? ` rate-limit=${rateLimit}` : '';
+                return [
+                    ...rosIfMissing(`find name="${profileName}"`, `add name="${profileName}"${rateLimitParam}`, `PPP profile ${profileName}`),
+                    ...rosIfExistsSet(`find name="${profileName}"`, `set [find name="${profileName}"]${rateLimitParam}`, `PPP profile ${profileName}`)
+                ];
+            });
+
+            const pppoeServerConfig = pppoePackages.length > 0 ? [
+                ...rosIfMissing('find service=pppoe', 'add service=pppoe interface=ether2 profile=default max-mtu=1480 max-mru=1480', 'PPPoE server'),
+                ...rosIfExistsSet('find service=pppoe', 'set [find service=pppoe] interface=ether2 profile=default max-mtu=1480 max-mru=1480', 'PPPoE server')
+            ] : [];
             const voucherUsers = vouchers.flatMap((voucher) => {
                 const relatedPackage = packages.find((pkg) => pkg.id === voucher.packageId);
                 const username = escapeRouterScriptString(String(voucher.username || voucher.code || 'voucher'));
@@ -752,8 +890,24 @@
             const pppoeAccounts = pppoeUsers.flatMap((user) => {
                 const username = escapeRouterScriptString(String(user.username || 'pppoe'));
                 const password = escapeRouterScriptString(String(user.password || 'password'));
+                const relatedPackage = packages.find(p => p.id === user.packageId);
+                const profileName = escapeRouterScriptString(String((relatedPackage && relatedPackage.name) || 'default'));
                 const comment = escapeRouterScriptString(`PPPoE User ${user.username || ''} | ${user.name || 'No name'}`);
-                return rosIfMissing(`find name="${username}"`, `add name="${username}" password="${password}" service=pppoe comment="${comment}"`, `PPPoE ${username}`);
+                const now = new Date();
+                const expiresAt = user.expiresAt ? new Date(user.expiresAt) : null;
+                const userExpired = expiresAt ? (expiresAt <= now) : false;
+
+                if ((user.status || 'active') === 'active' && !userExpired) {
+                    const expiresParam = expiresAt ? ` expires=${expiresAt.toISOString()}` : '';
+                    return [
+                        ...rosIfMissing(`find name="${username}"`, `add name="${username}" password="${password}" service=pppoe profile="${profileName}" comment="${comment}"${expiresParam} disabled=no`, `PPPoE ${username}`),
+                        ...rosIfExistsSet(`find name="${username}"`, `set [find name="${username}"] password="${password}" service=pppoe profile="${profileName}" comment="${comment}"${expiresParam} disabled=no`, `PPPoE ${username}`)
+                    ];
+                }
+
+                return [
+                    ...rosIfExistsSet(`find name="${username}"`, `set [find name="${username}"] disabled=yes comment="${comment} (disabled/expired)"`, `disable PPPoE ${username}`)
+                ];
             });
 
             return [
@@ -786,8 +940,8 @@
                 `set [ find default-name=wlan1 ] mode=ap-bridge ssid="${ssid}" disabled=no`,
                 '',
                 '/ip hotspot profile',
-                ...rosIfMissing('find name="hsprof1"', 'add hotspot-address=10.5.50.1 login-by=http-chap,http-pap name=hsprof1 html-directory=hotspot', 'hotspot profile hsprof1'),
-                ...rosIfExistsSet('find name="hsprof1"', 'set [find name="hsprof1"] html-directory=hotspot login-by=http-chap,http-pap hotspot-address=10.5.50.1', 'hotspot profile hsprof1'),
+                ...rosIfMissing('find name="hsprof1"', 'add hotspot-address=10.5.50.1 login-by=http-chap,http-pap mac-authentication=yes name=hsprof1 html-directory=hotspot', 'hotspot profile hsprof1'),
+                ...rosIfExistsSet('find name="hsprof1"', 'set [find name="hsprof1"] html-directory=hotspot login-by=http-chap,http-pap mac-authentication=yes hotspot-address=10.5.50.1', 'hotspot profile hsprof1'),
                 '',
                 '/ip hotspot',
                 ...rosIfMissing('find name="hotspot1"', 'add address-pool=hs-pool-1 disabled=no interface=bridge-hotspot name=hotspot1 profile=hsprof1', 'hotspot server hotspot1'),
@@ -795,8 +949,11 @@
                 '',
                 '/ip hotspot user profile',
                 ...rosIfMissing('find name="default"', 'add name=default shared-users=1 transparent-proxy=yes', 'default hotspot user profile'),
-                ...packageProfiles,
+                ...hotspotProfiles,
                 ...(voucherUsers.length || hotspotAccounts.length ? ['', '/ip hotspot user', ...voucherUsers, ...hotspotAccounts] : []),
+                '',
+                '/ppp profile',
+                ...pppoeProfiles,
                 '',
                 '/ppp/secret',
                 ...pppoeAccounts,
@@ -939,6 +1096,26 @@
             }
         });
 
+        const togglePackageDurationFields = () => {
+            const type = document.getElementById('package-type').value;
+            const durationBlock = document.getElementById('package-duration-block');
+            const expiryBlock = document.getElementById('package-expiry-block');
+
+            if (type === 'pppoe') {
+                durationBlock.style.display = 'none';
+                expiryBlock.style.display = 'none';
+                document.getElementById('package-duration').required = false;
+                document.getElementById('package-duration-unit').required = false;
+            } else {
+                durationBlock.style.display = 'grid';
+                expiryBlock.style.display = 'block';
+                document.getElementById('package-duration').required = true;
+                document.getElementById('package-duration-unit').required = true;
+            }
+        };
+
+        document.getElementById('package-type').addEventListener('change', togglePackageDurationFields);
+
         document.getElementById('package-form').addEventListener('submit', async (e) => {
             e.preventDefault();
             if (!currentUser) {
@@ -946,15 +1123,39 @@
                 return;
             }
             const id = document.getElementById('package-id').value;
+            const packageTypeRaw = document.getElementById('package-type').value;
+            const packageType = String(packageTypeRaw || 'hotspot').toLowerCase();
+            let durationMinutes = 0;
+            if (packageType === 'hotspot') {
+                const durationValue = Number(document.getElementById('package-duration').value || 0);
+                const durationUnit = document.getElementById('package-duration-unit').value;
+                durationMinutes = durationUnit === 'minutes' ? durationValue : durationValue * 60;
+            }
+
+            const expiresAtInput = document.getElementById('package-expires-at').value;
+            const expiresAt = (packageType === 'hotspot' && expiresAtInput) ? new Date(expiresAtInput).toISOString() : null;
+
             const payload = {
                 name: document.getElementById('package-name').value.trim(),
                 price: Number(document.getElementById('package-price').value || 0),
-                durationHours: Number(document.getElementById('package-duration').value || 0),
+                durationMinutes: Number(durationMinutes || 0),
+                type: packageType,
+                downloadSpeed: Number(document.getElementById('package-download-speed').value || 0),
+                uploadSpeed: Number(document.getElementById('package-upload-speed').value || 0),
+                expiresAt,
                 updatedAt: Date.now()
             };
 
-            if (!payload.name || payload.price <= 0 || payload.durationHours <= 0) {
-                alert('Please provide a valid name, price, and duration for the package.');
+            if (!payload.name) {
+                alert('Package name is required.');
+                return;
+            }
+            if (payload.price < 0) {
+                alert('Package price must be 0 or greater.');
+                return;
+            }
+            if (packageType === 'hotspot' && payload.durationMinutes <= 0) {
+                alert('Hotspot packages require duration.');
                 return;
             }
 
@@ -966,9 +1167,21 @@
                     await addDoc(collection(db, 'artifacts', appId, 'users', currentUser.uid, 'packages'), payload);
                 }
                 resetPackageForm();
+                console.log('Package saved successfully', payload);
+
+                // Immediately trigger router sync after package change
+                if (typeof triggerRouterSync === 'function') {
+                    for (const router of routers.filter(r => (r.status || 'offline') === 'online')) {
+                        try {
+                            await triggerRouterSync(router.id);
+                        } catch (err) {
+                            console.warn('Immediate router sync failed after package save', err);
+                        }
+                    }
+                }
             } catch (error) {
-                console.error("Error saving package to Firestore:", error);
-                alert(`Failed to save package. This is often due to Firestore security rules.\n\nError: ${error.message}`);
+                console.error('Error saving package to Firestore:', error);
+                alert(`Failed to save package. This is often due to Firestore security rules or connectivity.\n\nError: ${error.message}`);
             }
         });
 
@@ -1019,10 +1232,15 @@
             e.preventDefault();
             if (!currentUser) return;
             const id = document.getElementById('pppoe-id').value;
+            const expiresAtValue = document.getElementById('pppoe-expires-at').value;
             const payload = {
                 username: document.getElementById('pppoe-username').value.trim(),
                 password: document.getElementById('pppoe-password').value.trim(),
                 name: document.getElementById('pppoe-name').value.trim() || '',
+                packageId: document.getElementById('pppoe-package').value,
+                packageName: packages.find(p => p.id === document.getElementById('pppoe-package').value)?.name || '',
+                status: document.getElementById('pppoe-status').value || 'active',
+                expiresAt: expiresAtValue ? new Date(expiresAtValue).toISOString() : null,
                 updatedAt: Date.now()
             };
             if (id) {
@@ -1058,7 +1276,24 @@
             document.getElementById('package-id').value = pkg.id;
             document.getElementById('package-name').value = pkg.name || '';
             document.getElementById('package-price').value = pkg.price ?? '';
-            document.getElementById('package-duration').value = pkg.durationHours ?? '';
+            const durationMins = pkg.durationMinutes ?? (pkg.durationHours ? pkg.durationHours * 60 : '');
+            if (durationMins && Number(durationMins) > 0) {
+                if (Number(durationMins) % 60 === 0) {
+                    document.getElementById('package-duration').value = Number(durationMins) / 60;
+                    document.getElementById('package-duration-unit').value = 'hours';
+                } else {
+                    document.getElementById('package-duration').value = Number(durationMins);
+                    document.getElementById('package-duration-unit').value = 'minutes';
+                }
+            } else {
+                document.getElementById('package-duration').value = '';
+                document.getElementById('package-duration-unit').value = 'hours';
+            }
+            document.getElementById('package-type').value = pkg.type || 'hotspot';
+            document.getElementById('package-download-speed').value = pkg.downloadSpeed ?? '';
+            document.getElementById('package-upload-speed').value = pkg.uploadSpeed ?? '';
+            document.getElementById('package-expires-at').value = pkg.expiresAt ? new Date(pkg.expiresAt).toISOString().slice(0, 16) : '';
+            togglePackageDurationFields();
             document.getElementById('package-submit-btn').innerText = 'Update Package';
             window.switchTab('packages');
         };
@@ -1184,6 +1419,9 @@
             document.getElementById('pppoe-username').value = user.username || '';
             document.getElementById('pppoe-password').value = user.password || '';
             document.getElementById('pppoe-name').value = user.name || '';
+            document.getElementById('pppoe-package').value = user.packageId || '';
+            document.getElementById('pppoe-expires-at').value = user.expiresAt ? new Date(user.expiresAt).toISOString().slice(0, 16) : '';
+            document.getElementById('pppoe-status').value = user.status || 'active';
             document.getElementById('pppoe-submit-btn').innerText = 'Update PPPoE User';
             window.switchTab('pppoe');
         };
@@ -1194,6 +1432,26 @@
             if (document.getElementById('pppoe-id').value === id) {
                 resetPppoeForm();
             }
+        };
+
+        window.terminatePppoeUser = async (id) => {
+            if (!currentUser || !confirm('Terminate this PPPoE user session?')) return;
+            const userRef = doc(db, 'artifacts', appId, 'users', currentUser.uid, 'pppoe-users', id);
+            await updateDoc(userRef, {
+                status: 'disabled',
+                updatedAt: Date.now()
+            });
+            renderPppoeUsers();
+        };
+
+        window.reconnectPppoeUser = async (id) => {
+            if (!currentUser) return;
+            const userRef = doc(db, 'artifacts', appId, 'users', currentUser.uid, 'pppoe-users', id);
+            await updateDoc(userRef, {
+                status: 'active',
+                updatedAt: Date.now()
+            });
+            renderPppoeUsers();
         };
 
         resetPackageForm();
