@@ -558,9 +558,7 @@
             document.getElementById('modal-package-name').textContent = name;
             document.getElementById('modal-package-price').textContent = price;
             
-            const durationLabel = hours >= 24 && hours % 24 === 0
-                ? `${hours / 24} Day${hours / 24 === 1 ? "" : "s"} of access`
-                : `${hours} Hour${hours === 1 ? "" : "s"} of access`;
+            const durationLabel = `${formatDurationLabel(hours)} of access`;
             document.getElementById('modal-package-duration').textContent = durationLabel;
             
             // Clear previous input and status
@@ -735,6 +733,41 @@
         let selectedPackage = null;
         let availablePackages = [];
 
+        const filterLoginPackages = (items = []) => {
+            return items.filter((pkg) => (pkg.type || "hotspot") === "hotspot");
+        };
+
+        const getPackageDurationHours = (pkg = {}) => {
+            const explicitHours = Number(pkg.durationHours || 0);
+            if (explicitHours > 0) return explicitHours;
+            const minutes = Number(pkg.durationMinutes || 0);
+            if (minutes > 0) return minutes / 60;
+            return 0;
+        };
+
+        const getPackageDurationMinutes = (pkg = {}) => {
+            const explicitMinutes = Number(pkg.durationMinutes || 0);
+            if (explicitMinutes > 0) return explicitMinutes;
+            const hours = Number(pkg.durationHours || 0);
+            if (hours > 0) return hours * 60;
+            return 0;
+        };
+
+        const formatDurationLabel = (hoursValue) => {
+            const hours = Number(hoursValue || 0);
+            if (hours <= 0) return "No duration";
+            if (hours >= 24 && hours % 24 === 0) {
+                const days = hours / 24;
+                return `${days} Day${days === 1 ? "" : "s"}`;
+            }
+            if (hours >= 1) {
+                const rounded = Number.isInteger(hours) ? hours : Number(hours.toFixed(1));
+                return `${rounded} Hour${rounded === 1 ? "" : "s"}`;
+            }
+            const minutes = Math.max(1, Math.round(hours * 60));
+            return `${minutes} Minute${minutes === 1 ? "" : "s"}`;
+        };
+
         const readCachedPackages = () => {
             if (!ownerId) {
                 return [];
@@ -742,7 +775,7 @@
 
             try {
                 const cached = localStorage.getItem(`hotspotpro_packages_${ownerId}`);
-                return cached ? JSON.parse(cached) : [];
+                return cached ? filterLoginPackages(JSON.parse(cached)) : [];
             } catch (error) {
                 console.warn("Could not read cached packages:", error);
                 return [];
@@ -758,7 +791,7 @@
             if (!ownerId || !voucher?.id) return;
 
             const packageItem = availablePackages.find((p) => p.id === voucher.packageId);
-            const durationHours = Number(packageItem?.durationHours || 0);
+            const durationHours = getPackageDurationHours(packageItem);
             const now = Date.now();
             const updatePayload = {
                 used: true,
@@ -777,6 +810,32 @@
             }
         };
 
+        const markHotspotUserSession = async (hotspotUser) => {
+            if (!ownerId || !hotspotUser?.id) return 0;
+
+            const packageItem = availablePackages.find((p) => p.id === hotspotUser.packageId);
+            const durationMinutes = getPackageDurationMinutes(packageItem);
+            const now = Date.now();
+            const updatePayload = {
+                lastLoginAt: new Date(now).toISOString(),
+                lastLoginSource: "login.html",
+                updatedAt: Date.now()
+            };
+
+            if (durationMinutes > 0) {
+                updatePayload.sessionAllocatedMinutes = durationMinutes;
+                updatePayload.sessionExpiresAt = new Date(now + durationMinutes * 60 * 1000).toISOString();
+            }
+
+            try {
+                await updateDoc(doc(db, "artifacts", appId, "users", ownerId, "hotspot-users", hotspotUser.id), updatePayload);
+            } catch (error) {
+                console.warn("Could not update hotspot user session allocation:", error);
+            }
+
+            return durationMinutes;
+        };
+
         const renderPackages = (target, items) => {
             if (!items.length) {
                 target.innerHTML = '<div class="empty-state">No packages available yet.</div>';
@@ -785,10 +844,8 @@
 
             target.innerHTML = items.map((pkg) => {
                 const price = Number(pkg.price || 0).toFixed(0);
-                const hours = Number(pkg.durationHours || 0);
-                const durationLabel = hours >= 24 && hours % 24 === 0
-                    ? `${hours / 24} Day${hours / 24 === 1 ? "" : "s"}`
-                    : `${hours} Hour${hours === 1 ? "" : "s"}`;
+                const hours = getPackageDurationHours(pkg);
+                const durationLabel = formatDurationLabel(hours);
 
                 return [
                     '<div class="plan-card" style="cursor: pointer; border: 2px solid rgba(37, 99, 235, 0.2);" onclick="selectPackage(\'' + 
@@ -813,12 +870,12 @@
 
             try {
                 const snapshot = await getDocs(collection(db, "artifacts", appId, "users", ownerId, "packages"));
-                availablePackages = snapshot.docs.map((docItem) => ({ id: docItem.id, ...docItem.data() }))
+                availablePackages = filterLoginPackages(snapshot.docs.map((docItem) => ({ id: docItem.id, ...docItem.data() })))
                     .sort((a, b) => (a.name || "").localeCompare(b.name || ""));
                 renderPackages(shortTermTarget, availablePackages);
                 packagesNote.textContent = availablePackages.length
-                    ? `Loaded ${availablePackages.length} live package${availablePackages.length === 1 ? "" : "s"} from the dashboard.`
-                    : "No packages have been added in the dashboard yet.";
+                    ? `Loaded ${availablePackages.length} hotspot package${availablePackages.length === 1 ? "" : "s"} from the dashboard.`
+                    : "No hotspot packages have been added in the dashboard yet.";
             } catch (error) {
                 console.error("Package sync failed:", error);
                 shortTermTarget.innerHTML = '<div class="empty-state">Could not load packages.</div>';
@@ -843,15 +900,42 @@
                 let matchedVoucher = null;
 
                 if (manualUser && manualPass) {
-                    const usernameQuery = query(
+                    const hotspotUserQuery = query(
+                        collection(db, "artifacts", appId, "users", ownerId, "hotspot-users"),
+                        where("username", "==", manualUser)
+                    );
+                    const hotspotUserSnapshot = await getDocs(hotspotUserQuery);
+                    const hotspotUser = hotspotUserSnapshot.docs
+                        .map((d) => ({ id: d.id, ...d.data() }))
+                        .find((u) => String(u.password || "") === String(manualPass));
+
+                    if (hotspotUser) {
+                        if ((hotspotUser.status || "active") !== "active") {
+                            setStatus(voucherStatus, "error", "Hotspot user is disabled.");
+                            return;
+                        }
+
+                        const allocatedMinutes = await markHotspotUserSession(hotspotUser);
+                        authUsernameInput.value = hotspotUser.username || manualUser;
+                        authPasswordInput.value = hotspotUser.password || manualPass;
+
+                        const allocatedLabel = allocatedMinutes > 0
+                            ? formatDurationLabel(allocatedMinutes / 60)
+                            : "profile-controlled session";
+                        setStatus(voucherStatus, "success", `Hotspot login verified. Allocated ${allocatedLabel}.`);
+                        window.setTimeout(() => voucherForm.submit(), 500);
+                        return;
+                    }
+
+                    const voucherUsernameQuery = query(
                         collection(db, "artifacts", appId, "users", ownerId, "vouchers"),
                         where("username", "==", manualUser)
                     );
-                    const usernameSnapshot = await getDocs(usernameQuery);
-                    matchedVoucher = usernameSnapshot.docs.map(d => ({ id: d.id, ...d.data() }))
+                    const voucherUsernameSnapshot = await getDocs(voucherUsernameQuery);
+                    matchedVoucher = voucherUsernameSnapshot.docs.map(d => ({ id: d.id, ...d.data() }))
                         .find(v => v.password === manualPass);
                     if (!matchedVoucher) {
-                        setStatus(voucherStatus, "error", "Invalid hotspot username or password.");
+                        setStatus(voucherStatus, "error", "Invalid hotspot username/password or voucher credentials.");
                         return;
                     }
                 } else if (voucherCode) {
@@ -935,7 +1019,7 @@
             const cachedPackages = readCachedPackages();
             if (cachedPackages.length) {
                 renderPackages(shortTermTarget, cachedPackages);
-                packagesNote.textContent = `Firebase authentication failed${code}, so cached dashboard packages are being shown instead.`;
+                packagesNote.textContent = `Firebase authentication failed${code}, so cached hotspot packages are being shown instead.`;
                 setStatus(voucherStatus, "info", `Firebase authentication failed${code}. Cached packages loaded; voucher verification still needs Firebase access.`);
             } else {
                 setStatus(voucherStatus, "error", `Firebase authentication failed${code}. Enable Anonymous Auth and serve this page over http/https, not file://.`);

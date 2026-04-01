@@ -1,0 +1,358 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+    <meta http-equiv="Pragma" content="no-cache">
+    <meta http-equiv="Expires" content="0">
+    <title>Hotspot Pro | API User</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap');
+        
+        body {
+            font-family: 'Plus Jakarta Sans', sans-serif;
+            background-color: #f8fafc;
+        }
+
+        .sidebar-item.active {
+            background-color: #2563eb;
+            color: white;
+            box-shadow: 0 10px 15px -3px rgba(37, 99, 235, 0.2);
+        }
+
+        .tab-content { display: none; }
+        .tab-content.active { display: block; }
+
+        .modal-overlay {
+            background-color: rgba(15, 23, 42, 0.6);
+            backdrop-filter: blur(4px);
+        }
+    </style>
+</head>
+<body class="text-slate-900">
+
+    <div class="flex flex-col md:flex-row min-h-screen">
+        <!-- Sidebar -->
+        <aside class="w-full md:w-72 bg-slate-900 text-white p-6 flex flex-col shrink-0">
+            <div class="flex items-center gap-3 mb-10 px-2">
+                <div class="bg-blue-600 p-2 rounded-lg">
+                    <i class="fas fa-wifi text-white text-xl"></i>
+                </div>
+                <h1 class="text-xl font-bold tracking-tight">HOTSPOT<span class="text-blue-500">PRO</span></h1>
+            </div>
+            
+            <nav class="space-y-1 flex-1">
+                <a href="index.html" class="sidebar-item w-full flex items-center gap-4 px-4 py-3.5 rounded-xl transition-all duration-200 group text-slate-400 hover:text-white hover:bg-slate-800 text-sm font-bold">
+                    <i class="fas fa-th-large w-5"></i>
+                    <span>Overview</span>
+                </a>
+                <a href="api-user.html" class="sidebar-item active w-full flex items-center gap-4 px-4 py-3.5 rounded-xl transition-all duration-200 group text-sm font-bold">
+                    <i class="fas fa-user-secret w-5"></i>
+                    <span>API User</span>
+                </a>
+                <a href="upload-script.html" class="sidebar-item w-full flex items-center gap-4 px-4 py-3.5 rounded-xl transition-all duration-200 group text-slate-400 hover:text-white hover:bg-slate-800 text-sm font-bold">
+                    <i class="fas fa-upload w-5"></i>
+                    <span>Upload Script</span>
+                </a>
+            </nav>
+
+            <div class="mt-auto pt-6 border-t border-slate-800">
+                <div class="flex items-center gap-3 px-3 py-2 bg-slate-800/50 rounded-xl">
+                    <div id="user-initials" class="w-8 h-8 rounded-full bg-blue-500 flex items-center justify-center font-bold text-xs">--</div>
+                    <div class="overflow-hidden">
+                        <p id="user-display-name" class="text-sm font-medium truncate italic text-slate-400">Loading auth...</p>
+                        <p class="text-[10px] text-slate-400 uppercase font-bold tracking-wider">Network Owner</p>
+                    </div>
+                </div>
+            </div>
+        </aside>
+
+        <!-- Main Content -->
+        <main class="flex-1 p-6 md:p-10 lg:p-12 overflow-y-auto">
+            <header class="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-10">
+                <div>
+                    <h2 id="page-title" class="text-3xl font-extrabold text-slate-900 tracking-tight">API User Management</h2>
+                    <p class="text-slate-500 mt-1">Create and manage the API user for MikroTik integration.</p>
+                </div>
+            </header>
+
+            <div class="space-y-8">
+                <div class="bg-white rounded-3xl border border-slate-200 p-8 shadow-sm">
+                    <div class="flex items-center gap-4 mb-6">
+                        <div class="p-3 rounded-2xl bg-blue-50 text-blue-600">
+                            <i class="fas fa-user-secret text-xl"></i>
+                        </div>
+                        <div>
+                            <h3 class="text-xl font-bold text-slate-800">API User</h3>
+                            <p class="text-xs text-slate-500">This user connects the website to your MikroTik router.</p>
+                        </div>
+                    </div>
+
+                    <div id="api-user-info" class="space-y-4">
+                        <p>Loading API user information...</p>
+                    </div>
+                </div>
+
+                <div class="bg-white rounded-3xl border border-slate-200 p-8 shadow-sm">
+                    <div class="flex items-center gap-4 mb-6">
+                        <div class="p-3 rounded-2xl bg-orange-50 text-orange-600">
+                            <i class="fas fa-key text-xl"></i>
+                        </div>
+                        <div>
+                            <h3 class="text-xl font-bold text-slate-800">API Token</h3>
+                            <p class="text-xs text-slate-500">Use this token to authenticate with the API.</p>
+                        </div>
+                    </div>
+
+                    <div id="api-token-info" class="space-y-4">
+                        <p>Generate an API user to get a token.</p>
+                    </div>
+                </div>
+
+                <div class="bg-white rounded-3xl border border-slate-200 p-8 shadow-sm">
+                    <div class="flex items-center justify-between gap-4 mb-6">
+                        <div class="flex items-center gap-4">
+                            <div class="p-3 rounded-2xl bg-slate-100 text-slate-700">
+                                <i class="fas fa-stethoscope text-xl"></i>
+                            </div>
+                            <div>
+                                <h3 class="text-xl font-bold text-slate-800">Diagnostics</h3>
+                                <p class="text-xs text-slate-500">Checks auth and API-user function endpoints.</p>
+                            </div>
+                        </div>
+                        <button id="run-diagnostics-btn" class="bg-slate-900 text-white py-3 px-4 rounded-xl font-bold hover:bg-slate-800 transition">
+                            Run Diagnostics
+                        </button>
+                    </div>
+                    <div class="mb-4">
+                        <label for="api-base-url" class="block text-xs font-bold uppercase tracking-wide text-slate-500 mb-2">API Base URL (Optional)</label>
+                        <div class="flex gap-2">
+                            <input id="api-base-url" type="text" placeholder="https://your-app.vercel.app" class="flex-1 px-3 py-2 border border-slate-200 rounded-xl text-sm" />
+                            <button id="save-api-base-btn" class="px-3 py-2 bg-slate-200 text-slate-700 rounded-xl font-bold text-sm hover:bg-slate-300 transition">Save</button>
+                        </div>
+                        <p class="text-xs text-slate-500 mt-2">If this page is not served from Vercel, set your deployed Vercel base URL here.</p>
+                    </div>
+                    <pre id="diagnostics-output" class="p-4 rounded-2xl bg-slate-950 text-slate-100 text-xs overflow-auto whitespace-pre-wrap min-h-[120px]">Waiting to run diagnostics...</pre>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, onAuthStateChanged, signInAnonymously, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+
+        const firebaseConfig = {
+            apiKey: "AIzaSyADfXnmdXjeRbEewPCSrsKMDFXvIjTRsuA",
+            authDomain: "protech-d6a95.firebaseapp.com",
+            projectId: "protech-d6a95",
+            storageBucket: "protech-d6a95.firebasestorage.app",
+            messagingSenderId: "869476702981",
+            appId: "1:869476702981:web:365d6103fbb1c87602f56c",
+            measurementId: "G-VGEF25Q2YT"
+        };
+
+        const app = initializeApp(firebaseConfig);
+        const auth = getAuth(app);
+        const appId = firebaseConfig.projectId;
+        let currentUser = null;
+        const queryApiBase = new URLSearchParams(window.location.search).get("apiBase") || "";
+        const storedApiBase = localStorage.getItem("hotspotpro_api_base") || "";
+        let apiBaseUrl = queryApiBase || storedApiBase || "";
+
+        const normalizeBase = (value = "") => String(value || "").trim().replace(/\/+$/, "");
+
+        const getEndpointCandidates = (name) => {
+            const endpoints = [];
+            const normalizedCustom = normalizeBase(apiBaseUrl);
+            if (normalizedCustom) {
+                endpoints.push(`${normalizedCustom}/api/${name}`);
+            }
+            if (window.location.protocol === "https:" || window.location.protocol === "http:") {
+                endpoints.push(`${window.location.origin}/api/${name}`);
+            }
+            endpoints.push(`https://us-central1-${appId}.cloudfunctions.net/${name}`);
+            return Array.from(new Set(endpoints));
+        };
+
+        const callAuthedHttpFunction = async (name, payload = {}) => {
+            if (!auth.currentUser) {
+                throw new Error('Not authenticated');
+            }
+
+            const token = await auth.currentUser.getIdToken();
+            const tryEndpoints = getEndpointCandidates(name);
+
+            let lastError = null;
+            const attempts = [];
+            for (const endpoint of tryEndpoints) {
+                try {
+                    const response = await fetch(endpoint, {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'Authorization': `Bearer ${token}`
+                        },
+                        body: JSON.stringify(payload)
+                    });
+
+                    const data = await response.json().catch(() => ({}));
+                    if (!response.ok || data?.success === false) {
+                        throw new Error(data?.error || `HTTP ${response.status}`);
+                    }
+                    return data;
+                } catch (error) {
+                    lastError = error;
+                    attempts.push(`${endpoint} -> ${String(error?.message || error)}`);
+                }
+            }
+
+            const detail = attempts.length ? ` Attempts: ${attempts.join(" | ")}` : "";
+            throw lastError || new Error(`Could not reach API endpoint: ${name}.${detail}`);
+        };
+
+        const initAuth = async () => {
+            try {
+                if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                    await signInWithCustomToken(auth, __initial_auth_token);
+                } else {
+                    await signInAnonymously(auth);
+                }
+            } catch (error) {
+                console.error('Firebase auth failed:', error);
+                document.getElementById('api-user-info').innerHTML = '<p class="text-red-500">Authentication failed. Refresh and try again.</p>';
+            }
+        };
+
+        onAuthStateChanged(auth, async (user) => {
+            if (!user) return;
+            currentUser = user;
+            document.getElementById('user-display-name').innerText = user.uid.substring(0, 10) + "...";
+            document.getElementById('user-initials').innerText = "AD";
+            await ensureApiUserAndToken();
+            await runDiagnostics();
+        });
+
+        async function runDiagnostics() {
+            const out = document.getElementById('diagnostics-output');
+            const now = new Date().toISOString();
+            if (!out) return;
+            out.textContent = `[${now}] Running diagnostics...\n`;
+            out.textContent += `Location: ${window.location.href}\n`;
+            out.textContent += `Protocol: ${window.location.protocol}\n`;
+            out.textContent += `API Base: ${normalizeBase(apiBaseUrl) || "(auto)"}\n`;
+            out.textContent += `Endpoints: ${getEndpointCandidates("ensureApiUserAndToken").join(", ")}\n\n`;
+
+            const checks = [
+                { name: 'Auth Token', run: async () => ({ uid: auth.currentUser?.uid || 'unknown' }) },
+                { name: 'ensureApiUserAndToken', run: async () => await callAuthedHttpFunction('ensureApiUserAndToken') },
+                { name: 'getApiUser', run: async () => await callAuthedHttpFunction('getApiUser') },
+                { name: 'generateApiToken', run: async () => await callAuthedHttpFunction('generateApiToken') }
+            ];
+
+            for (const check of checks) {
+                try {
+                    const result = await check.run();
+                    const summary = JSON.stringify(result).slice(0, 220);
+                    out.textContent += `PASS ${check.name}: ${summary}\n`;
+                } catch (error) {
+                    const msg = String(error?.message || error || 'Unknown error');
+                    out.textContent += `FAIL ${check.name}: ${msg}\n`;
+                }
+            }
+        }
+
+        async function ensureApiUserAndToken() {
+            const apiUserInfo = document.getElementById('api-user-info');
+            const apiTokenInfo = document.getElementById('api-token-info');
+
+            try {
+                apiUserInfo.innerHTML = '<p>Checking API user...</p>';
+                apiTokenInfo.innerHTML = '<p>Preparing API token...</p>';
+
+                let bootstrap;
+                try {
+                    bootstrap = await callAuthedHttpFunction('ensureApiUserAndToken');
+                } catch (bootstrapError) {
+                    console.warn('ensureApiUserAndToken failed, falling back to legacy sequence', bootstrapError);
+                    let apiUserResult = await callAuthedHttpFunction('getApiUser');
+                    if (!apiUserResult?.apiUser) {
+                        await callAuthedHttpFunction('createApiUser');
+                        apiUserResult = await callAuthedHttpFunction('getApiUser');
+                    }
+                    const tokenResult = await callAuthedHttpFunction('generateApiToken');
+                    bootstrap = {
+                        apiUser: apiUserResult?.apiUser || null,
+                        token: tokenResult?.token || ''
+                    };
+                }
+
+                const apiUser = bootstrap?.apiUser;
+                const token = bootstrap?.token || '';
+                if (!apiUser || !token) throw new Error('API user/token bootstrap returned incomplete data');
+
+                apiUserInfo.innerHTML = `
+                    <p><strong>User ID:</strong> ${apiUser.uid}</p>
+                    <p><strong>Email:</strong> ${apiUser.email || 'N/A'}</p>
+                    <p class="text-emerald-600 font-semibold">API user auto-created and ready.</p>
+                `;
+
+                apiTokenInfo.innerHTML = `
+                    <button id="regenerate-token-btn" class="bg-blue-600 text-white py-3 px-4 rounded-xl font-bold hover:bg-blue-700 transition">Regenerate Token</button>
+                    <button id="copy-token-btn" class="bg-slate-200 text-slate-700 py-3 px-4 rounded-xl font-bold hover:bg-slate-300 transition ml-2">Copy Token</button>
+                    <pre id="api-token" class="mt-4 p-4 bg-slate-100 rounded-lg overflow-auto text-xs break-all whitespace-pre-wrap">${token}</pre>
+                `;
+
+                document.getElementById('regenerate-token-btn')?.addEventListener('click', regenerateToken);
+                document.getElementById('copy-token-btn')?.addEventListener('click', async () => {
+                    const value = document.getElementById('api-token')?.innerText || '';
+                    try {
+                        await navigator.clipboard.writeText(value);
+                        alert('Token copied.');
+                    } catch (error) {
+                        alert('Could not copy token.');
+                    }
+                });
+            } catch (error) {
+                console.error('Error preparing API user/token:', error);
+                const message = String(error?.message || error || 'Unknown error');
+                apiUserInfo.innerHTML = `<p class="text-red-500">Error preparing API user. ${message}</p>`;
+                apiTokenInfo.innerHTML = `<p class="text-red-500">Token unavailable. ${message}</p>`;
+            }
+        }
+
+        async function regenerateToken() {
+            try {
+                const tokenResult = await callAuthedHttpFunction('generateApiToken');
+                const token = tokenResult?.token || '';
+                const tokenEl = document.getElementById('api-token');
+                if (tokenEl) tokenEl.innerText = token;
+            } catch (error) {
+                console.error('Token regeneration failed:', error);
+                alert('Token regeneration failed.');
+            }
+        }
+
+        document.getElementById('run-diagnostics-btn')?.addEventListener('click', async () => {
+            await runDiagnostics();
+        });
+
+        document.getElementById('api-base-url').value = normalizeBase(apiBaseUrl);
+        document.getElementById('save-api-base-btn')?.addEventListener('click', async () => {
+            const input = document.getElementById('api-base-url');
+            apiBaseUrl = normalizeBase(input?.value || "");
+            if (apiBaseUrl) {
+                localStorage.setItem("hotspotpro_api_base", apiBaseUrl);
+            } else {
+                localStorage.removeItem("hotspotpro_api_base");
+            }
+            await runDiagnostics();
+        });
+
+        initAuth();
+    </script>
+</body>
+</html>

@@ -1,6 +1,7 @@
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
         import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-        import { getFirestore, doc, setDoc, onSnapshot, collection, addDoc, updateDoc, deleteDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+import { getFirestore, doc, setDoc, onSnapshot, collection, addDoc, updateDoc, deleteDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { getFunctions, httpsCallable } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-functions.js";
 
         const firebaseConfig = {
             apiKey: "AIzaSyADfXnmdXjeRbEewPCSrsKMDFXvIjTRsuA",
@@ -14,6 +15,7 @@
         const app = initializeApp(firebaseConfig);
         const auth = getAuth(app);
         const db = getFirestore(app);
+        const functions = getFunctions(app, 'us-central1');
         const appId = firebaseConfig.projectId;
 
         let currentUser = null;
@@ -23,8 +25,17 @@
         let activeSessions = [];
         let pppoeUsers = [];
         let hotspotUsers = [];
+        let onlinePppoeUsers = [];
+        let onlineHotspotUsers = [];
+        let onlinePppoeUsernames = new Set();
+        let onlineHotspotUsernames = new Set();
         let activeRouterFilter = 'all';
         let activeRouterId = '';
+        let routerHealthIntervalId = null;
+        let routerHealthBusy = false;
+        let liveSessionBusy = false;
+        const ROUTER_PING_INTERVAL_MS = 15000;
+        let cachedApiToken = '';
 
         const escapeHtml = (value = '') => String(value)
             .replace(/&/g, '&amp;')
@@ -257,7 +268,7 @@
 
         function setupListeners(userId) {
             onSnapshot(doc(db, 'artifacts', appId, 'users', userId, 'config', 'mikrotik'), s => {
-                if(s.exists()){
+                if (s.exists()) {
                     const d = s.data();
                     if (!document.getElementById('router-id').value) {
                         document.getElementById('router-name').value = d.name || '';
@@ -267,8 +278,9 @@
                         document.getElementById('router-user').value = d.username || '';
                         document.getElementById('router-pass').value = d.password || '';
                     }
-                    document.getElementById('router-status-indicator').className = "w-2 h-2 rounded-full bg-green-500 animate-pulse";
-                    document.getElementById('router-status-text').innerText = (d.name || d.ip || 'Router') + " online";
+                    // Only indicate that we have router config saved, not actual network health
+                    document.getElementById('router-status-indicator').className = "w-2 h-2 rounded-full bg-amber-400";
+                    document.getElementById('router-status-text').innerText = (d.name || d.ip || 'Router') + " config loaded (check connection)";
                 } else {
                     document.getElementById('router-status-indicator').className = "w-2 h-2 rounded-full bg-amber-400";
                     document.getElementById('router-status-text').innerText = "Firebase connected";
@@ -333,6 +345,7 @@
                     document.getElementById('router-status-text').innerText = `${activeRouter.name || activeRouter.ip || 'Router'} ${activeRouter.status || 'offline'}`;
                 }
                 renderRouters();
+                startContinuousRouterPing();
                 
                 // Auto-sync when routers are added or updated
                 (async () => {
@@ -394,11 +407,31 @@
 
             // Listen to PPPoE users
             onSnapshot(collection(db, 'artifacts', appId, 'users', userId, 'pppoe-users'), snapshot => {
+                const packageNameById = new Map(packages.map((pkg) => [pkg.id, pkg.name || '']));
                 pppoeUsers = snapshot.docs
-                    .map(item => ({ id: item.id, ...item.data() }))
+                    .map(item => {
+                        const data = item.data();
+                        const mappedPackageName = packageNameById.get(data.packageId) || data.packageName || '';
+                        const mappedProfileName = data.profileName || mappedPackageName || 'default';
+                        return { id: item.id, ...data, packageName: mappedPackageName, profileName: mappedProfileName };
+                    })
                     .sort((a, b) => (a.username || '').localeCompare(b.username || ''));
                 document.getElementById('pppoe-count').innerText = pppoeUsers.length;
                 renderPppoeUsers();
+
+                (async () => {
+                    for (const user of pppoeUsers) {
+                        const expectedPackageName = packageNameById.get(user.packageId) || user.packageName || '';
+                        const expectedProfileName = expectedPackageName || 'default';
+                        if (user.packageName !== expectedPackageName || user.profileName !== expectedProfileName) {
+                            await updateDoc(doc(db, 'artifacts', appId, 'users', userId, 'pppoe-users', user.id), {
+                                packageName: expectedPackageName,
+                                profileName: expectedProfileName,
+                                updatedAt: Date.now()
+                            });
+                        }
+                    }
+                })().catch((error) => console.warn('Could not auto-assign PPPoE profile names:', error));
                 
                 // Auto-sync PPPoE users to routers when they change
                 (async () => {
@@ -412,11 +445,31 @@
 
             // Listen to Hotspot users
             onSnapshot(collection(db, 'artifacts', appId, 'users', userId, 'hotspot-users'), snapshot => {
+                const packageNameById = new Map(packages.map((pkg) => [pkg.id, pkg.name || '']));
                 hotspotUsers = snapshot.docs
-                    .map(item => ({ id: item.id, ...item.data() }))
+                    .map(item => {
+                        const data = item.data();
+                        const mappedPackageName = packageNameById.get(data.packageId) || data.packageName || '';
+                        const mappedProfileName = data.profileName || mappedPackageName || 'default';
+                        return { id: item.id, ...data, packageName: mappedPackageName, profileName: mappedProfileName };
+                    })
                     .sort((a, b) => (a.username || '').localeCompare(b.username || ''));
                 document.getElementById('hotspot-user-count').innerText = hotspotUsers.length;
                 renderHotspotUsers();
+
+                (async () => {
+                    for (const user of hotspotUsers) {
+                        const expectedPackageName = packageNameById.get(user.packageId) || user.packageName || '';
+                        const expectedProfileName = expectedPackageName || 'default';
+                        if (user.packageName !== expectedPackageName || user.profileName !== expectedProfileName) {
+                            await updateDoc(doc(db, 'artifacts', appId, 'users', userId, 'hotspot-users', user.id), {
+                                packageName: expectedPackageName,
+                                profileName: expectedProfileName,
+                                updatedAt: Date.now()
+                            });
+                        }
+                    }
+                })().catch((error) => console.warn('Could not auto-assign hotspot profile names:', error));
 
                 // Auto-sync Hotspot users to routers when they change
                 (async () => {
@@ -429,20 +482,142 @@
             });
         }
 
-        // Auto-check router health every 60 seconds
-        setInterval(async () => {
-            if (!currentUser || routers.length === 0) return;
-            for (const router of routers) {
-                try {
-                    const response = await fetch(
-                        `https://us-central1-${appId}.cloudfunctions.net/checkRouterHealth?appId=${appId}&userId=${currentUser.uid}&routerId=${router.id}`
-                    );
-                    await response.json();
-                } catch (error) {
-                    console.warn(`Health check failed for ${router.name || router.ip}:`, error);
+        function updateRouterBadgeFromPing(router, status) {
+            if (!router) return;
+            const isOnline = status === 'online';
+            const pingTime = new Date().toLocaleTimeString();
+            document.getElementById('router-status-indicator').className = isOnline
+                ? "w-2 h-2 rounded-full bg-green-500 animate-pulse"
+                : "w-2 h-2 rounded-full bg-rose-500";
+            document.getElementById('router-status-text').innerText = `${router.name || router.ip || 'Router'} ${isOnline ? 'online' : 'offline'} (last ping ${pingTime})`;
+        }
+
+        async function pingRouter(router) {
+            if (!currentUser || !router?.id) return { status: 'offline' };
+            const response = await fetch(
+                `https://us-central1-${appId}.cloudfunctions.net/checkRouterHealth?appId=${appId}&userId=${currentUser.uid}&routerId=${router.id}`,
+                { method: 'GET', mode: 'cors' }
+            );
+            if (!response.ok) {
+                const text = await response.text();
+                throw new Error(`Ping failed ${response.status}: ${text}`);
+            }
+            const result = await response.json();
+            return result;
+        }
+
+        const parseRunCommandUsernames = (payload) => {
+            const lines = Array.isArray(payload?.result) ? payload.result : [];
+            const usernames = [];
+            for (const line of lines) {
+                const userMatch = String(line || '').match(/=user=([^\s]+)/);
+                if (userMatch?.[1]) {
+                    usernames.push(userMatch[1]);
                 }
             }
-        }, 60000);
+            return usernames;
+        };
+
+        const runMikrotikApiCommand = async (routerId, command, args = []) => {
+            if (!currentUser) throw new Error('User not authenticated');
+            const token = await auth.currentUser.getIdToken();
+            const response = await fetch(`https://us-central1-${appId}.cloudfunctions.net/runMikrotikCommand`, {
+                method: 'POST',
+                mode: 'cors',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${token}`
+                },
+                body: JSON.stringify({
+                    appId,
+                    userId: currentUser.uid,
+                    routerId,
+                    command,
+                    args
+                })
+            });
+            const data = await response.json().catch(() => ({}));
+            if (!response.ok || data?.success === false) {
+                throw new Error(data?.error || `Router command failed (${response.status})`);
+            }
+            return data;
+        };
+
+        async function refreshLiveSessionsFromRouter(routerId) {
+            if (!routerId || !currentUser || liveSessionBusy) return;
+            liveSessionBusy = true;
+            try {
+                const [pppoeResult, hotspotResult] = await Promise.all([
+                    runMikrotikApiCommand(routerId, '/ppp/active/print', ['=.proplist=user,address,uptime']),
+                    runMikrotikApiCommand(routerId, '/ip/hotspot/active/print', ['=.proplist=user,address,uptime'])
+                ]);
+
+                onlinePppoeUsers = parseRunCommandUsernames(pppoeResult);
+                onlineHotspotUsers = parseRunCommandUsernames(hotspotResult);
+                onlinePppoeUsernames = new Set(onlinePppoeUsers.map((u) => String(u || '').toLowerCase()));
+                onlineHotspotUsernames = new Set(onlineHotspotUsers.map((u) => String(u || '').toLowerCase()));
+
+                renderPppoeUsers();
+                renderHotspotUsers();
+            } catch (error) {
+                console.warn('Could not fetch live PPPoE/Hotspot sessions:', error);
+            } finally {
+                liveSessionBusy = false;
+            }
+        }
+
+        async function runContinuousRouterPing() {
+            if (routerHealthBusy || !currentUser || routers.length === 0) return;
+            routerHealthBusy = true;
+            try {
+                const activeRouterBeforePing = routers.find((router) => router.id === activeRouterId) || routers[0];
+                if (activeRouterBeforePing) {
+                    document.getElementById('router-status-indicator').className = "w-2 h-2 rounded-full bg-amber-500 animate-pulse";
+                    document.getElementById('router-status-text').innerText = `${activeRouterBeforePing.name || activeRouterBeforePing.ip || 'Router'} pinging...`;
+                }
+
+                for (const router of routers) {
+                    try {
+                        const result = await pingRouter(router);
+                        router.status = result.status === 'online' ? 'online' : 'offline';
+                    } catch (error) {
+                        router.status = 'offline';
+                        console.warn(`Continuous ping failed for ${router.name || router.ip}:`, error);
+                    }
+                }
+
+                const activeRouter = routers.find((router) => router.id === activeRouterId) || routers[0];
+                if (activeRouter) {
+                    updateRouterBadgeFromPing(activeRouter, activeRouter.status || 'offline');
+                    if ((activeRouter.status || 'offline') === 'online') {
+                        await refreshLiveSessionsFromRouter(activeRouter.id);
+                    } else {
+                        onlinePppoeUsers = [];
+                        onlineHotspotUsers = [];
+                        onlinePppoeUsernames = new Set();
+                        onlineHotspotUsernames = new Set();
+                        renderPppoeUsers();
+                        renderHotspotUsers();
+                    }
+                }
+                renderRouters();
+            } finally {
+                routerHealthBusy = false;
+            }
+        }
+
+        function startContinuousRouterPing() {
+            if (routerHealthIntervalId) {
+                clearInterval(routerHealthIntervalId);
+            }
+            if (!routers.length) {
+                document.getElementById('router-status-indicator').className = "w-2 h-2 rounded-full bg-slate-400";
+                document.getElementById('router-status-text').innerText = 'No router configured';
+                return;
+            }
+            runContinuousRouterPing();
+            routerHealthIntervalId = setInterval(runContinuousRouterPing, ROUTER_PING_INTERVAL_MS);
+        }
 
         const renderActiveSessions = () => {
             const list = document.getElementById('active-sessions-list');
@@ -471,11 +646,15 @@
 
         const renderPppoeUsers = () => {
             const list = document.getElementById('pppoe-list');
+            const countEl = document.getElementById('pppoe-count');
+            if (countEl) {
+                countEl.innerText = `${onlinePppoeUsers.length}/${pppoeUsers.length}`;
+            }
             if (!pppoeUsers.length) {
                 list.innerHTML = '<div class="rounded-2xl border border-dashed border-slate-200 p-8 text-center text-slate-400">No PPPoE users yet.</div>';
                 return;
             }
-            const pppoeActiveUsernames = new Set(activeSessions.map(s => String(s.username || '').toLowerCase()));
+            const pppoeActiveUsernames = onlinePppoeUsernames;
 
             list.innerHTML = pppoeUsers.map(user => {
                 const now = new Date();
@@ -504,7 +683,7 @@
                     '<div class="rounded-2xl border border-slate-200 p-5 flex items-center justify-between hover:bg-slate-50 transition">',
                     '<div>',
                     `<h4 class="font-bold text-slate-900">${escapeHtml(user.username || 'PPPoE User')}</h4>`,
-                    `<p class="text-sm text-slate-500">${escapeHtml(user.name || 'No name')} · ${escapeHtml(user.packageName || 'No package')} · Created ${new Date(user.createdAt || 0).toLocaleDateString()}</p>`,
+                    `<p class="text-sm text-slate-500">${escapeHtml(user.name || 'No name')} · ${escapeHtml(user.packageName || 'No package')} · Profile ${escapeHtml(user.profileName || user.packageName || 'default')} · Created ${new Date(user.createdAt || 0).toLocaleDateString()}</p>`,
                     `<p class="text-xs font-bold uppercase tracking-wider text-${statusClass}-600">${status.toUpperCase()}${expiresAt ? ` · Expires ${expiresAt.toLocaleString()}` : ''}</p>`,
                     '</div>',
                     '<div class="flex gap-2">',
@@ -543,7 +722,13 @@
             document.getElementById('router-id').value = '';
             document.getElementById('router-name').value = '';
             document.getElementById('router-ssid').value = '';
+            document.getElementById('router-ip').value = '';
             document.getElementById('router-port').value = '8728';
+            document.getElementById('router-winbox-port').value = '8291';
+            document.getElementById('router-webfig-protocol').value = 'https';
+            document.getElementById('router-webfig-port').value = '8081';
+            document.getElementById('router-user').value = '';
+            document.getElementById('router-pass').value = '';
             document.getElementById('save-router-btn').innerHTML = '<i class="fas fa-save"></i> Save & Test Link';
         };
 
@@ -557,22 +742,33 @@
 
         const renderHotspotUsers = () => {
             const list = document.getElementById('hotspot-user-list');
+            const countEl = document.getElementById('hotspot-user-count');
+            if (countEl) {
+                countEl.innerText = `${onlineHotspotUsers.length}/${hotspotUsers.length}`;
+            }
             if (!hotspotUsers.length) {
                 list.innerHTML = '<div class="rounded-2xl border border-dashed border-slate-200 p-8 text-center text-slate-400">No hotspot users yet.</div>';
                 return;
             }
-            list.innerHTML = hotspotUsers.map(user => [
-                '<div class="rounded-2xl border border-slate-200 p-5 flex items-center justify-between hover:bg-slate-50 transition">',
-                '<div>',
-                `<h4 class="font-bold text-slate-900">${escapeHtml(user.username || 'Hotspot User')}</h4>`,
-                `<p class="text-sm text-slate-500">${escapeHtml(user.status || 'active')} · ${escapeHtml(user.packageName || 'No package')} · Created ${new Date(user.createdAt || 0).toLocaleDateString()}</p>`,
-                '</div>',
-                '<div class="flex gap-2">',
-                `<button type="button" onclick="editHotspotUser('${user.id}')" class="px-3 py-1.5 text-sm rounded-lg bg-slate-100 text-slate-700 font-bold hover:bg-slate-200 transition">Edit</button>`,
-                `<button type="button" onclick="removeHotspotUser('${user.id}')" class="px-3 py-1.5 text-sm rounded-lg bg-red-50 text-red-600 font-bold hover:bg-red-100 transition">Delete</button>`,
-                '</div>',
-                '</div>'
-            ].join('')).join('');
+            list.innerHTML = hotspotUsers.map(user => {
+                const isOnline = onlineHotspotUsernames.has(String(user.username || '').toLowerCase()) && (user.status || 'active') === 'active';
+                const statusLabel = isOnline ? 'online' : ((user.status || 'active') === 'active' ? 'idle' : 'disabled');
+                const statusClass = isOnline ? 'emerald' : ((user.status || 'active') === 'active' ? 'amber' : 'slate');
+
+                return [
+                    '<div class="rounded-2xl border border-slate-200 p-5 flex items-center justify-between hover:bg-slate-50 transition">',
+                    '<div>',
+                    `<h4 class="font-bold text-slate-900">${escapeHtml(user.username || 'Hotspot User')}</h4>`,
+                    `<p class="text-sm text-slate-500">${escapeHtml(user.status || 'active')} · ${escapeHtml(user.packageName || 'No package')} · Profile ${escapeHtml(user.profileName || user.packageName || 'default')} · Created ${new Date(user.createdAt || 0).toLocaleDateString()}</p>`,
+                    `<p class="text-xs font-bold uppercase tracking-wider text-${statusClass}-600">${statusLabel.toUpperCase()}</p>`,
+                    '</div>',
+                    '<div class="flex gap-2">',
+                    `<button type="button" onclick="editHotspotUser('${user.id}')" class="px-3 py-1.5 text-sm rounded-lg bg-slate-100 text-slate-700 font-bold hover:bg-slate-200 transition">Edit</button>`,
+                    `<button type="button" onclick="removeHotspotUser('${user.id}')" class="px-3 py-1.5 text-sm rounded-lg bg-red-50 text-red-600 font-bold hover:bg-red-100 transition">Delete</button>`,
+                    '</div>',
+                    '</div>'
+                ].join('');
+            }).join('');
         };
 
         const resetHotspotUserForm = () => {
@@ -590,6 +786,9 @@
             document.getElementById('router-port').value = router.port || '8728';
             document.getElementById('router-user').value = router.username || '';
             document.getElementById('router-pass').value = router.password || '';
+            document.getElementById('router-winbox-port').value = router.winboxPort || '8291';
+            document.getElementById('router-webfig-protocol').value = router.webfigProtocol || 'https';
+            document.getElementById('router-webfig-port').value = router.webfigPort || '8081';
             document.getElementById('save-router-btn').innerHTML = '<i class="fas fa-save"></i> Update Router';
         };
 
@@ -614,21 +813,20 @@
 
             try {
                 document.getElementById('router-status-text').innerText = `${router.name || router.ip} logging in...`;
-                const response = await fetch(
-                    `https://us-central1-${appId}.cloudfunctions.net/checkRouterHealth?appId=${appId}&userId=${currentUser.uid}&routerId=${routerId}`,
-                    {
-                        method: 'GET',
-                        mode: 'cors',
-                        credentials: 'omit',
-                        headers: {
-                            'Content-Type': 'application/json'
-                        }
+                const healthUrl = `https://us-central1-${appId}.cloudfunctions.net/checkRouterHealth?appId=${appId}&userId=${currentUser.uid}&routerId=${routerId}`;
+                const response = await fetch(healthUrl, {
+                    method: 'GET',
+                    mode: 'cors',
+                    credentials: 'omit',
+                    headers: {
+                        'Content-Type': 'application/json'
                     }
-                );
+                });
                 const result = await response.json();
                 if (result.status === 'online') {
                     document.getElementById('router-status-indicator').className = 'w-2 h-2 rounded-full bg-green-500 animate-pulse';
                     document.getElementById('router-status-text').innerText = `${router.name || router.ip} online`;
+                    await refreshLiveSessionsFromRouter(routerId);
                 } else {
                     document.getElementById('router-status-indicator').className = 'w-2 h-2 rounded-full bg-rose-500';
                     document.getElementById('router-status-text').innerText = `${router.name || router.ip} offline`; 
@@ -639,7 +837,13 @@
                 alert(`Router ${router.name || router.ip} is ${result.status}. Sync triggered.`);
             } catch (error) {
                 console.error('Login and sync failed:', error);
-                alert(`Could not login/sync router: ${error.message || error}`);
+
+                let userMessage = `Could not login/sync router: ${error.message || error}`;
+                if (error.message && error.message.includes('Failed to fetch')) {
+                    userMessage += ' (Check Cloud Function deployment / network / CORS. Open https://us-central1-' + appId + '.cloudfunctions.net/checkRouterHealth in browser to verify.)';
+                }
+
+                alert(userMessage);
                 document.getElementById('router-status-indicator').className = 'w-2 h-2 rounded-full bg-rose-500';
                 document.getElementById('router-status-text').innerText = `${router.name || router.ip} login failed`;
             }
@@ -811,7 +1015,100 @@
             `}`
         ];
 
+        const callAuthedHttpFunction = async (name, payload = {}) => {
+            if (!auth.currentUser) {
+                throw new Error('User not authenticated');
+            }
+            const token = await auth.currentUser.getIdToken();
+            const endpoints = [
+                `/api/${name}`,
+                `https://us-central1-${appId}.cloudfunctions.net/${name}`
+            ];
+
+            let lastError = null;
+            for (const endpoint of endpoints) {
+                try {
+                    const response = await fetch(endpoint, {
+                        method: 'POST',
+                        mode: 'cors',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'Authorization': `Bearer ${token}`
+                        },
+                        body: JSON.stringify(payload)
+                    });
+                    const data = await response.json().catch(() => ({}));
+                    if (!response.ok || data?.success === false) {
+                        throw new Error(data?.error || `HTTP ${response.status}`);
+                    }
+                    return data;
+                } catch (error) {
+                    lastError = error;
+                }
+            }
+            throw lastError || new Error(`Could not reach API endpoint: ${name}`);
+        };
+
+        const ensureApiUserTokenForScript = async () => {
+            if (cachedApiToken) {
+                return cachedApiToken;
+            }
+
+            let token = '';
+            try {
+                const bootstrap = await callAuthedHttpFunction('ensureApiUserAndToken');
+                token = String(bootstrap?.token || '');
+            } catch (bootstrapError) {
+                console.warn('ensureApiUserAndToken failed, falling back:', bootstrapError);
+                let apiUserResult = await callAuthedHttpFunction('getApiUser');
+                if (!apiUserResult?.apiUser) {
+                    await callAuthedHttpFunction('createApiUser');
+                    apiUserResult = await callAuthedHttpFunction('getApiUser');
+                }
+                if (!apiUserResult?.apiUser) {
+                    throw new Error('API user creation failed');
+                }
+                const tokenResult = await callAuthedHttpFunction('generateApiToken');
+                token = String(tokenResult?.token || '');
+            }
+
+            if (!token) {
+                throw new Error('Could not generate API token');
+            }
+
+            cachedApiToken = token;
+            return token;
+        };
+
+        const formatRosDuration = (minutesValue) => {
+            const totalMinutes = Math.max(1, Math.ceil(Number(minutesValue || 0)));
+            const hours = Math.floor(totalMinutes / 60);
+            const minutes = totalMinutes % 60;
+            if (hours > 0 && minutes > 0) return `${hours}h${minutes}m`;
+            if (hours > 0) return `${hours}h`;
+            return `${minutes}m`;
+        };
+
+        const formatHotspotRateLimit = (downloadMbps, uploadMbps) => {
+            const down = Number(downloadMbps || 0);
+            const up = Number(uploadMbps || 0);
+            if (down <= 0 || up <= 0) return '';
+            return `${down}M/${up}M`;
+        };
+
         const buildSetupScript = async () => {
+            let apiTokenForUpload = '';
+            try {
+                apiTokenForUpload = await ensureApiUserTokenForScript();
+            } catch (error) {
+                console.warn('Could not auto-create API token for script:', error);
+            }
+
+            const apiTokenEscaped = escapeRouterScriptString(apiTokenForUpload || '');
+            const ownerSeedRaw = String(currentUser?.uid || 'owner').replace(/[^a-zA-Z0-9]/g, '').slice(0, 8) || 'owner';
+            const apiScriptUsername = escapeRouterScriptString(`hotspotpro-${ownerSeedRaw}`);
+            const apiScriptPassword = escapeRouterScriptString(`Hp@${ownerSeedRaw}2026`);
+            const apiGroupName = escapeRouterScriptString('hotspotpro-api');
             const portalHtml = escapeRouterScriptString(await getPortalHtmlForScript());
             const aloginHtml = escapeRouterScriptString('<html><head><meta http-equiv="refresh" content="0; url=login.html"></head><body></body></html>');
             const statusHtml = escapeRouterScriptString('<html><head><meta http-equiv="refresh" content="4; url=https://www.google.com"></head><body style="font-family:Arial,sans-serif;text-align:center;padding:40px;background:#f8fafc;"><h2>Connected</h2><p>Your internet access is active.</p><p>Redirecting to Google in a few seconds...</p><p><a href="https://www.google.com">Open Google now</a></p><p><a href="$(link-logout)">Log out</a></p></body></html>');
@@ -823,10 +1120,10 @@
                 const profileName = escapeRouterScriptString(String(pkg.name || 'Package'));
                 const sharedUsers = '1';
                 const durationMinutes = Number(pkg.durationMinutes || (pkg.durationHours ? pkg.durationHours * 60 : 1440));
-                const sessionTimeout = `${Math.max(1, Math.ceil(durationMinutes / 60))}h`;
+                const sessionTimeout = formatRosDuration(durationMinutes);
                 const downloadSpeed = Number(pkg.downloadSpeed || 0);
                 const uploadSpeed = Number(pkg.uploadSpeed || 0);
-                const rateLimit = downloadSpeed > 0 && uploadSpeed > 0 ? `${downloadSpeed}M/${uploadSpeed}M` : '';
+                const rateLimit = formatHotspotRateLimit(downloadSpeed, uploadSpeed);
                 const rateLimitParam = rateLimit ? ` rate-limit=${rateLimit}` : '';
                 return [
                     ...rosIfMissing(`find name="${profileName}"`, `add name="${profileName}" shared-users=${sharedUsers} session-timeout=${sessionTimeout}${rateLimitParam}`, `profile ${profileName}`),
@@ -872,7 +1169,7 @@
             const hotspotAccounts = hotspotUsers.flatMap((user) => {
                 const username = escapeRouterScriptString(String(user.username || 'hotspot'));
                 const password = escapeRouterScriptString(String(user.password || 'password'));
-                const profileName = escapeRouterScriptString(String((packages.find(p => p.id === user.packageId)?.name) || 'default'));
+                const profileName = escapeRouterScriptString(String(user.profileName || (packages.find(p => p.id === user.packageId)?.name) || 'default'));
                 const comment = escapeRouterScriptString(`Hotspot ${user.username || ''} | ${(user.status || 'active')}`);
 
                 if ((user.status || 'active') === 'active') {
@@ -891,7 +1188,7 @@
                 const username = escapeRouterScriptString(String(user.username || 'pppoe'));
                 const password = escapeRouterScriptString(String(user.password || 'password'));
                 const relatedPackage = packages.find(p => p.id === user.packageId);
-                const profileName = escapeRouterScriptString(String((relatedPackage && relatedPackage.name) || 'default'));
+                const profileName = escapeRouterScriptString(String(user.profileName || (relatedPackage && relatedPackage.name) || 'default'));
                 const comment = escapeRouterScriptString(`PPPoE User ${user.username || ''} | ${user.name || 'No name'}`);
                 const now = new Date();
                 const expiresAt = user.expiresAt ? new Date(user.expiresAt) : null;
@@ -914,6 +1211,17 @@
                 '# tech.rsc',
                 '# HotspotPro MikroTik Setup Script',
                 '# Version: 1.3.0',
+                ...(apiTokenForUpload
+                    ? [
+                        '# Auto-created API token (for upload-script.html)',
+                        `# API_TOKEN=${apiTokenEscaped}`
+                    ]
+                    : [
+                        '# API token auto-create failed (open API User page to generate)'
+                    ]),
+                '# Auto-generated RouterOS API user credentials',
+                `# ROUTER_API_USER=${apiScriptUsername}`,
+                `# ROUTER_API_PASS=${apiScriptPassword}`,
                 '',
                 '/interface bridge',
                 ...rosIfMissing('find name="bridge-hotspot"', 'add name=bridge-hotspot comment="HotspotPro Main Bridge"', 'bridge-hotspot'),
@@ -980,6 +1288,15 @@
                 ...rosIfMissing('find name="hotspot/status.html"', 'add name="hotspot/status.html" type=".html"', 'file hotspot/status.html'),
                 `/file set [find name="hotspot/status.html"] contents="${statusHtml}"`,
                 '',
+                '# Router API user + permissions',
+                '/user group',
+                ...rosIfMissing(`find name="${apiGroupName}"`, `add name="${apiGroupName}" policy=api,read,write,test`, `user group ${apiGroupName}`),
+                ...rosIfExistsSet(`find name="${apiGroupName}"`, `set [find name="${apiGroupName}"] policy=api,read,write,test`, `user group ${apiGroupName}`),
+                '',
+                '/user',
+                ...rosIfMissing(`find name="${apiScriptUsername}"`, `add name="${apiScriptUsername}" password="${apiScriptPassword}" group="${apiGroupName}" disabled=no comment="HotspotPro API user"`, `router api user ${apiScriptUsername}`),
+                ...rosIfExistsSet(`find name="${apiScriptUsername}"`, `set [find name="${apiScriptUsername}"] password="${apiScriptPassword}" group="${apiGroupName}" disabled=no comment="HotspotPro API user"`, `router api user ${apiScriptUsername}`),
+                '',
                 '# API Access configuration',
                 '/ip service',
                 'set api disabled=no port=8728',
@@ -1040,7 +1357,10 @@
                 port: document.getElementById('router-port').value,
                 username: document.getElementById('router-user').value,
                 password: document.getElementById('router-pass').value,
-                remoteWinbox: `${document.getElementById('router-ip').value}:${document.getElementById('router-port').value || '8728'}`,
+                winboxPort: document.getElementById('router-winbox-port').value || '8291',
+                webfigProtocol: document.getElementById('router-webfig-protocol').value || 'https',
+                webfigPort: document.getElementById('router-webfig-port').value || '8081',
+                remoteWinbox: `${document.getElementById('router-ip').value}:${document.getElementById('router-winbox-port').value || '8291'}`,
                 status: 'online',
                 updatedAt: Date.now()
             };
@@ -1094,6 +1414,175 @@
                 document.getElementById('router-status-text').innerText = "Save failed";
                 alert('Could not save to Firebase. Check Authentication and Firestore rules.');
             }
+        });
+
+        const appendRouterLog = (message) => {
+            const logPanel = document.getElementById('router-log-panel');
+            if (!logPanel) return;
+            const timestamp = new Date().toISOString().slice(11, 19);
+            logPanel.textContent = `${logPanel.textContent}\n[${timestamp}] ${message}`;
+            logPanel.scrollTop = logPanel.scrollHeight;
+        };
+
+        const testMikrotikLogin = async () => {
+            const statusEl = document.getElementById('router-login-status');
+            statusEl.textContent = 'Logging in to MikroTik...';
+            appendRouterLog('testMikrotikLogin started');
+
+            if (!currentUser) {
+                statusEl.textContent = 'Error: user not authenticated';
+                return;
+            }
+
+            try {
+                const token = await auth.currentUser.getIdToken();
+                const response = await fetch(`https://us-central1-${appId}.cloudfunctions.net/runMikrotikCommand`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${token}`,
+                    },
+                    body: JSON.stringify({
+                        appId,
+                        userId: currentUser.uid,
+                        command: '/system/identity/print',
+                        args: []
+                    }),
+                });
+
+                const data = await response.json();
+                if (!response.ok) {
+                    statusEl.textContent = `Router login failed: ${data.error || 'Unknown error'}`;
+                    appendRouterLog(`MikroTik login failed: ${data.error || 'Unknown error'}`);
+                } else {
+                    statusEl.textContent = 'Router login success';
+                    appendRouterLog('MikroTik login success');
+                    console.log('MikroTik login response:', data);
+                    const selectedRouterId = document.getElementById('router-id')?.value || activeRouterId;
+                    if (selectedRouterId && typeof triggerRouterSync === 'function') {
+                        await triggerRouterSync(selectedRouterId);
+                        appendRouterLog(`Applied hotspot profile sync to router ${selectedRouterId}`);
+                        statusEl.textContent = 'Router login success. Bandwidth/session profile sync triggered.';
+                    }
+                }
+            } catch (err) {
+                if (String(err?.message || '').includes('Failed to fetch')) {
+                    const fnUrl = `https://us-central1-${appId}.cloudfunctions.net/runMikrotikCommand`;
+                    statusEl.textContent = `Command error: Failed to fetch. Check Cloud Functions deployment/network/CORS. URL: ${fnUrl}`;
+                    appendRouterLog(`MikroTik login error: Failed to fetch (${fnUrl})`);
+                } else {
+                    statusEl.textContent = `Command error: ${err.message}`;
+                    appendRouterLog(`MikroTik login error: ${err.message}`);
+                }
+            }
+        };
+
+        document.getElementById('test-router-login-btn').addEventListener('click', (e) => {
+            e.preventDefault();
+            testMikrotikLogin();
+        });
+
+        const openRouterManager = (target) => {
+            const ip = document.getElementById('router-ip')?.value?.trim();
+            const statusEl = document.getElementById('router-login-status');
+            if (!ip) {
+                if (statusEl) statusEl.textContent = 'Please set router IP first.';
+                return;
+            }
+            const winboxPort = document.getElementById('router-winbox-port')?.value || '8291';
+            const webfigProtocol = document.getElementById('router-webfig-protocol')?.value || 'https';
+            const webfigPort = document.getElementById('router-webfig-port')?.value || '8081';
+
+            const winboxUrl = `winbox://${ip}:${winboxPort}`;
+            const webfigUrl = `${webfigProtocol}://${ip}:${webfigPort}/`;
+
+            const url = target === 'winbox' ? winboxUrl : webfigUrl;
+            window.open(url, '_blank');
+
+            if (statusEl) statusEl.textContent = `Opened ${target.toUpperCase()} URL: ${url}`;
+            appendRouterLog(`opened ${target} URL: ${url}`);
+        };
+
+        const copyRouterManagerUrl = (target) => {
+            const ip = document.getElementById('router-ip')?.value?.trim();
+            if (!ip) {
+                document.getElementById('router-login-status').textContent = 'Please set router IP first.';
+                return;
+            }
+            const winboxPort = document.getElementById('router-winbox-port')?.value || '8291';
+            const webfigProtocol = document.getElementById('router-webfig-protocol')?.value || 'https';
+            const webfigPort = document.getElementById('router-webfig-port')?.value || '8081';
+            const winboxUrl = `winbox://${ip}:${winboxPort}`;
+            const webfigUrl = `${webfigProtocol}://${ip}:${webfigPort}/`;
+            const url = target === 'winbox' ? winboxUrl : webfigUrl;
+            navigator.clipboard.writeText(url).then(() => {
+                document.getElementById('router-login-status').textContent = `${target.toUpperCase()} URL copied to clipboard`;
+                appendRouterLog(`copied ${target} URL to clipboard`);
+            }).catch(err => {
+                document.getElementById('router-login-status').textContent = `Copy failed: ${err.message}`;
+                appendRouterLog(`copy ${target} URL failed: ${err.message}`);
+            });
+        };
+
+        const selfCheckRouter = async () => {
+            const statusEl = document.getElementById('router-login-status');
+            statusEl.textContent = 'Running Cloud Function health check...';
+
+            if (!currentUser) {
+                statusEl.textContent = 'User not authenticated';
+                appendRouterLog('Self-check failed: user not authenticated');
+                return;
+            }
+
+            const routerId = document.getElementById('router-id')?.value;
+            if (!routerId) {
+                statusEl.textContent = 'Save router config first.';
+                appendRouterLog('Self-check failed: no router ID selected');
+                return;
+            }
+
+            try {
+                const response = await fetch(`https://us-central1-${appId}.cloudfunctions.net/checkRouterHealth?appId=${appId}&userId=${currentUser.uid}&routerId=${routerId}`, {
+                    method: 'GET',
+                    mode: 'cors'
+                });
+                if (!response.ok) {
+                    const text = await response.text();
+                    statusEl.textContent = `Health check failed ${response.status}: ${text}`;
+                    return;
+                }
+                const data = await response.json();
+                statusEl.textContent = `Health check status: ${data.status || 'unknown'}${data.message ? ' - ' + data.message : ''}`;
+                appendRouterLog(`Health check success: ${data.status || 'unknown'}`);
+            } catch (err) {
+                statusEl.textContent = `Health check network error: ${err.message}`;
+                appendRouterLog(`Health check error: ${err.message}`);
+            }
+        };
+
+        document.getElementById('open-winbox-btn')?.addEventListener('click', (e) => {
+            e.preventDefault();
+            openRouterManager('winbox');
+        });
+
+        document.getElementById('open-webfig-btn')?.addEventListener('click', (e) => {
+            e.preventDefault();
+            openRouterManager('webfig');
+        });
+
+        document.getElementById('copy-winbox-url-btn')?.addEventListener('click', (e) => {
+            e.preventDefault();
+            copyRouterManagerUrl('winbox');
+        });
+
+        document.getElementById('copy-webfig-url-btn')?.addEventListener('click', (e) => {
+            e.preventDefault();
+            copyRouterManagerUrl('webfig');
+        });
+
+        document.getElementById('router-selfcheck-btn')?.addEventListener('click', (e) => {
+            e.preventDefault();
+            selfCheckRouter();
         });
 
         const togglePackageDurationFields = () => {
@@ -1214,6 +1703,7 @@
                 password: document.getElementById('hotspot-user-password').value.trim(),
                 packageId: document.getElementById('hotspot-user-package').value,
                 packageName: packages.find(p => p.id === document.getElementById('hotspot-user-package').value)?.name || '',
+                profileName: packages.find(p => p.id === document.getElementById('hotspot-user-package').value)?.name || 'default',
                 status: document.getElementById('hotspot-user-status').value,
                 updatedAt: Date.now(),
             };
@@ -1239,6 +1729,7 @@
                 name: document.getElementById('pppoe-name').value.trim() || '',
                 packageId: document.getElementById('pppoe-package').value,
                 packageName: packages.find(p => p.id === document.getElementById('pppoe-package').value)?.name || '',
+                profileName: packages.find(p => p.id === document.getElementById('pppoe-package').value)?.name || 'default',
                 status: document.getElementById('pppoe-status').value || 'active',
                 expiresAt: expiresAtValue ? new Date(expiresAtValue).toISOString() : null,
                 updatedAt: Date.now()
@@ -1369,22 +1860,21 @@
             const button = event?.target;
             if (button) {
                 button.disabled = true;
-                button.innerText = 'Waiting 3s...';
+                button.innerText = 'Checking...';
             }
-            
-            // Wait 3 seconds before pinging MikroTik
-            await new Promise(resolve => setTimeout(resolve, 3000));
-            
+
             try {
-                if (button) {
-                    button.innerText = 'Checking...';
+                const router = routers.find(item => item.id === id);
+                const result = await pingRouter({ id });
+                if (router) {
+                    router.status = result.status === 'online' ? 'online' : 'offline';
+                    if (activeRouterId === id) {
+                        updateRouterBadgeFromPing(router, router.status);
+                    }
+                    if (router.status === 'online') {
+                        await refreshLiveSessionsFromRouter(id);
+                    }
                 }
-                
-                const response = await fetch(
-                    `https://us-central1-${appId}.cloudfunctions.net/checkRouterHealth?appId=${appId}&userId=${currentUser.uid}&routerId=${id}`
-                );
-                const result = await response.json();
-                
                 if (button) {
                     button.disabled = false;
                     button.innerText = result.status === 'online' ? '✓ Online' : '✗ Offline';
@@ -1454,7 +1944,5 @@
             renderPppoeUsers();
         };
 
-        resetPackageForm();
-        resetVoucherForm();
         resetPppoeForm();
         resetRouterForm();
