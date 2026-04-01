@@ -3,14 +3,57 @@ const net = require("net");
 const tls = require("tls");
 const admin = require("firebase-admin");
 const { onDocumentWritten } = require("firebase-functions/v2/firestore");
+const { onSchedule } = require("firebase-functions/v2/scheduler");
 const { onRequest } = require("firebase-functions/v2/https");
 const logger = require("firebase-functions/logger");
 const axios = require("axios");
+const cors = require('cors')({ origin: true });
+const { radiusApi } = require("./radius-api");
 
 admin.initializeApp();
 
 const db = admin.firestore();
 const SYNC_SCRIPT_NAME = "hotspotpro-auto-sync";
+
+exports.radiusApi = radiusApi;
+
+exports.autoUpdate = onSchedule("every 5 minutes", async (event) => {
+    const snapshot = await db.collection("artifacts").get();
+    snapshot.forEach(async (doc) => {
+        const appId = doc.id;
+        const usersSnapshot = await db.collection(`artifacts/${appId}/users`).get();
+        usersSnapshot.forEach(async (userDoc) => {
+            const userId = userDoc.id;
+            const configRef = db.doc(`artifacts/${appId}/users/${userId}/config/mikrotik`);
+            const configSnap = await configRef.get();
+
+            if (configSnap.exists) {
+                const config = configSnap.data();
+                const { ip, port, username, password } = config;
+
+                if (ip && username && password) {
+                    const client = new RouterOsClient({
+                        host: ip,
+                        port: Number(port || 8728),
+                        username,
+                        password,
+                        ssl: Number(port || 8728) === 8729,
+                    });
+
+                    try {
+                        await client.connect();
+                        await client.login();
+                        // Perform update logic here
+                        await client.close();
+                    } catch (error) {
+                        console.error("Error auto-updating router:", error);
+                    }
+                }
+            }
+        });
+    });
+});
+
 
 function encodeLength(length) {
   if (length < 0x80) {
@@ -512,6 +555,100 @@ exports.checkRouterHealth = onRequest(
   }
 );
 
+/* ===== MIKROTIK COMMAND API ===== */
+
+exports.runMikrotikCommand = onRequest(
+  {
+    region: "us-central1",
+    memory: "256MiB",
+    timeoutSeconds: 60,
+  },
+  (req, res) => {
+    cors(req, res, async () => {
+      if (req.method === 'OPTIONS') {
+        return res.status(204).send('');
+      }
+
+      if (req.method !== 'POST') {
+        return res.status(405).json({ error: 'Method not allowed, use POST' });
+      }
+
+      try {
+        const authHeader = req.headers.authorization;
+        if (!authHeader || !authHeader.startsWith('Bearer ')) {
+          return res.status(401).json({ error: 'Unauthorized' });
+        }
+
+        const idToken = authHeader.substring(7);
+        let decoded;
+        try {
+          decoded = await admin.auth().verifyIdToken(idToken);
+        } catch (err) {
+          return res.status(401).json({ error: 'Invalid token' });
+        }
+
+        const { appId, userId, routerId, command, args } = req.body;
+        if (!appId || !userId || !command) {
+          return res.status(400).json({ error: 'Missing required fields: appId, userId, command' });
+        }
+
+        if (userId !== decoded.uid) {
+          return res.status(403).json({ error: 'Forbidden: userId mismatch' });
+        }
+
+        const routerDoc = routerId
+          ? await db.doc(`artifacts/${appId}/users/${userId}/routers/${routerId}`).get()
+          : await db.doc(`artifacts/${appId}/users/${userId}/config/mikrotik`).get();
+
+        if (!routerDoc.exists) {
+          return res.status(404).json({ error: 'Router not found' });
+        }
+
+        const routerData = routerDoc.data();
+        const apiConfig = {
+          host: routerData.ip || routerData.host,
+          port: Number(routerData.port || 8728),
+          username: routerData.username,
+          password: routerData.password,
+          ssl: Number(routerData.port || 8728) === 8729,
+        };
+
+        if (!apiConfig.host || !apiConfig.username || !apiConfig.password) {
+          return res.status(400).json({ error: 'Router credentials incomplete' });
+        }
+
+        const client = new RouterOsClient(apiConfig);
+        try {
+          await client.connect();
+          await client.login();
+
+          const words = [command];
+          if (Array.isArray(args)) {
+            args.forEach((item) => {
+              if (typeof item === 'string') {
+                words.push(item);
+              }
+            });
+          }
+
+          const sentences = await client.send(words);
+          client.close();
+
+          const response = sentences.map((sentence) => sentence.join(' '));
+          return res.json({ success: true, result: response });
+        } catch (error) {
+          client.close();
+          logger.error('MikroTik command failed', error);
+          return res.status(500).json({ error: error.message || 'Router command failed' });
+        }
+      } catch (error) {
+        logger.error('runMikrotikCommand error', error);
+        return res.status(500).json({ error: 'Internal server error' });
+      }
+    });
+  }
+);
+
 /* ===== M-PESA INTEGRATION ===== */
 
 async function getMpesaAccessToken(consumerKey, consumerSecret) {
@@ -786,3 +923,197 @@ exports.mpesaCallback = onRequest(
     }
   }
 );
+
+exports.createApiUser = onRequest({ region: "us-central1" }, async (req, res) => {
+    cors(req, res, async () => {
+        if (req.method === 'OPTIONS') return res.status(204).send('');
+        if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed, use POST' });
+
+        const verifyCaller = async () => {
+            const authHeader = req.headers.authorization;
+            if (!authHeader || !authHeader.startsWith('Bearer ')) {
+                throw Object.assign(new Error('Unauthorized'), { statusCode: 401 });
+            }
+            const idToken = authHeader.substring(7);
+            await admin.auth().verifyIdToken(idToken);
+        };
+
+        const findApiUser = async () => {
+            let pageToken;
+            do {
+                const result = await admin.auth().listUsers(1000, pageToken);
+                const found = result.users.find((user) => user.customClaims && user.customClaims.api_user);
+                if (found) return found;
+                pageToken = result.pageToken;
+            } while (pageToken);
+            return null;
+        };
+
+        try {
+            await verifyCaller();
+            const existing = await findApiUser();
+            if (existing) {
+                return res.json({ success: true, uid: existing.uid, email: existing.email, created: false });
+            }
+
+            const userRecord = await admin.auth().createUser({
+                email: `api-user-${Date.now()}@hotspotpro.com`,
+                password: Math.random().toString(36).slice(-12)
+            });
+            await admin.auth().setCustomUserClaims(userRecord.uid, { api_user: true });
+            res.json({ success: true, uid: userRecord.uid, email: userRecord.email, created: true });
+        } catch (error) {
+            logger.error('Error creating API user:', error);
+            res.status(error.statusCode || 500).json({ error: error.message || 'Internal server error' });
+        }
+    });
+});
+
+exports.getApiUser = onRequest({ region: "us-central1" }, async (req, res) => {
+    cors(req, res, async () => {
+        if (req.method === 'OPTIONS') return res.status(204).send('');
+        if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed, use POST' });
+
+        try {
+            const authHeader = req.headers.authorization;
+            if (!authHeader || !authHeader.startsWith('Bearer ')) {
+                return res.status(401).json({ error: 'Unauthorized' });
+            }
+            const idToken = authHeader.substring(7);
+            await admin.auth().verifyIdToken(idToken);
+
+            let pageToken;
+            let apiUser = null;
+            do {
+                const result = await admin.auth().listUsers(1000, pageToken);
+                apiUser = result.users.find((user) => user.customClaims && user.customClaims.api_user) || null;
+                pageToken = result.pageToken;
+            } while (!apiUser && pageToken);
+
+            res.json({ success: true, apiUser });
+        } catch (error) {
+            logger.error('Error getting API user:', error);
+            res.status(500).json({ error: error.message || 'Internal server error' });
+        }
+    });
+});
+
+exports.generateApiToken = onRequest({ region: "us-central1" }, async (req, res) => {
+    cors(req, res, async () => {
+        if (req.method === 'OPTIONS') return res.status(204).send('');
+        if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed, use POST' });
+
+        try {
+            const authHeader = req.headers.authorization;
+            if (!authHeader || !authHeader.startsWith('Bearer ')) {
+                return res.status(401).json({ error: 'Unauthorized' });
+            }
+
+            const idToken = authHeader.substring(7);
+            await admin.auth().verifyIdToken(idToken);
+
+            let pageToken;
+            let apiUser = null;
+            do {
+                const result = await admin.auth().listUsers(1000, pageToken);
+                apiUser = result.users.find((user) => user.customClaims && user.customClaims.api_user) || null;
+                pageToken = result.pageToken;
+            } while (!apiUser && pageToken);
+
+            if (!apiUser) {
+                return res.status(404).json({ error: 'API user not found' });
+            }
+
+            const token = await admin.auth().createCustomToken(apiUser.uid);
+            res.json({ success: true, token, uid: apiUser.uid });
+        } catch (error) {
+            logger.error('Error generating API token:', error);
+            res.status(500).json({ error: error.message || 'Internal server error' });
+        }
+    });
+});
+
+exports.ensureApiUserAndToken = onRequest({ region: "us-central1" }, async (req, res) => {
+    cors(req, res, async () => {
+        if (req.method === 'OPTIONS') return res.status(204).send('');
+        if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed, use POST' });
+
+        try {
+            const authHeader = req.headers.authorization;
+            if (!authHeader || !authHeader.startsWith('Bearer ')) {
+                return res.status(401).json({ error: 'Unauthorized' });
+            }
+            const idToken = authHeader.substring(7);
+            await admin.auth().verifyIdToken(idToken);
+
+            let pageToken;
+            let apiUser = null;
+            do {
+                const result = await admin.auth().listUsers(1000, pageToken);
+                apiUser = result.users.find((user) => user.customClaims && user.customClaims.api_user) || null;
+                pageToken = result.pageToken;
+            } while (!apiUser && pageToken);
+
+            if (!apiUser) {
+                const userRecord = await admin.auth().createUser({
+                    email: `api-user-${Date.now()}@hotspotpro.com`,
+                    password: Math.random().toString(36).slice(-12)
+                });
+                await admin.auth().setCustomUserClaims(userRecord.uid, { api_user: true });
+                apiUser = userRecord;
+            }
+
+            const token = await admin.auth().createCustomToken(apiUser.uid);
+            return res.json({
+                success: true,
+                apiUser: { uid: apiUser.uid, email: apiUser.email || null },
+                token
+            });
+        } catch (error) {
+            logger.error('Error ensuring API user/token:', error);
+            return res.status(500).json({ error: error.message || 'Internal server error' });
+        }
+    });
+});
+
+exports.updateRouterConfig = onRequest({ region: "us-central1" }, async (req, res) => {
+    cors(req, res, async () => {
+        if (req.method !== 'POST') {
+            return res.status(405).json({ error: 'Method not allowed, use POST' });
+        }
+
+        try {
+            const authHeader = req.headers.authorization;
+            if (!authHeader || !authHeader.startsWith('Bearer ')) {
+                return res.status(401).json({ error: 'Unauthorized' });
+            }
+
+            const idToken = authHeader.substring(7);
+            await admin.auth().verifyIdToken(idToken);
+
+            const { ip, username, password } = req.body;
+
+            const client = new RouterOsClient({
+                host: ip,
+                user: username,
+                password: password,
+            });
+
+            try {
+                await client.connect();
+                await client.menu("/ip address").add({
+                    address: "192.168.1.100/24",
+                    interface: "ether1",
+                });
+                await client.close();
+                res.json({ success: true });
+            } catch (error) {
+                console.error("Error updating router configuration:", error);
+                res.status(500).json({ error: "Error updating router configuration." });
+            }
+        } catch (error) {
+            logger.error('Error in updateRouterConfig:', error);
+            res.status(500).json({ error: 'Internal server error' });
+        }
+    });
+});
