@@ -36,6 +36,7 @@ import { getFirestore, doc, setDoc, onSnapshot, collection, addDoc, updateDoc, d
         let liveSessionBusy = false;
         const ROUTER_PING_INTERVAL_MS = 15000;
         let cachedApiToken = '';
+        let cachedApiUser = null;
 
         const escapeHtml = (value = '') => String(value)
             .replace(/&/g, '&amp;')
@@ -263,6 +264,14 @@ import { getFirestore, doc, setDoc, onSnapshot, collection, addDoc, updateDoc, d
                 document.getElementById('user-display-name').innerText = user.uid.substring(0, 10) + "...";
                 document.getElementById('user-initials').innerText = "AD";
                 setupListeners(user.uid);
+                (async () => {
+                    try {
+                        await ensureApiUserTokenForScript();
+                        console.log('API user auto-bootstrap complete.');
+                    } catch (error) {
+                        console.warn('API user auto-bootstrap failed:', error);
+                    }
+                })();
             }
         });
 
@@ -1049,6 +1058,11 @@ import { getFirestore, doc, setDoc, onSnapshot, collection, addDoc, updateDoc, d
             throw lastError || new Error(`Could not reach API endpoint: ${name}`);
         };
 
+        const createApiUser = async () => callAuthedHttpFunction('createApiUser');
+        const getApiUser = async () => callAuthedHttpFunction('getApiUser');
+        const generateApiToken = async () => callAuthedHttpFunction('generateApiToken');
+        const ensureApiUserAndToken = async () => callAuthedHttpFunction('ensureApiUserAndToken');
+
         const ensureApiUserTokenForScript = async () => {
             if (cachedApiToken) {
                 return cachedApiToken;
@@ -1056,19 +1070,21 @@ import { getFirestore, doc, setDoc, onSnapshot, collection, addDoc, updateDoc, d
 
             let token = '';
             try {
-                const bootstrap = await callAuthedHttpFunction('ensureApiUserAndToken');
+                const bootstrap = await ensureApiUserAndToken();
+                cachedApiUser = bootstrap?.apiUser || null;
                 token = String(bootstrap?.token || '');
             } catch (bootstrapError) {
                 console.warn('ensureApiUserAndToken failed, falling back:', bootstrapError);
-                let apiUserResult = await callAuthedHttpFunction('getApiUser');
+                let apiUserResult = await getApiUser();
                 if (!apiUserResult?.apiUser) {
-                    await callAuthedHttpFunction('createApiUser');
-                    apiUserResult = await callAuthedHttpFunction('getApiUser');
+                    await createApiUser();
+                    apiUserResult = await getApiUser();
                 }
                 if (!apiUserResult?.apiUser) {
                     throw new Error('API user creation failed');
                 }
-                const tokenResult = await callAuthedHttpFunction('generateApiToken');
+                cachedApiUser = apiUserResult.apiUser;
+                const tokenResult = await generateApiToken();
                 token = String(tokenResult?.token || '');
             }
 
